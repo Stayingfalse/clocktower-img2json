@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -9,10 +10,18 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .converter import convert_image_bytes_to_script
+from .startup import init_db, refresh_official_roles
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    init_db()
+    refresh_official_roles()
+    yield
 
 
 def create_app(storage_dir: str = "storage") -> FastAPI:
-    app = FastAPI(title="clocktower-img2json", version="0.1.0")
+    app = FastAPI(title="clocktower-img2json", version="0.1.0", lifespan=_lifespan)
     storage_path = Path(storage_dir).resolve()
     storage_path.mkdir(parents=True, exist_ok=True)
 

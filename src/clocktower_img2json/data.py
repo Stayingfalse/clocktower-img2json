@@ -6,6 +6,8 @@ from functools import lru_cache
 
 import requests
 
+from .startup import OFFICIAL_ROLES_PATH, get_official_roles as _get_raw_official_roles
+
 ROLES_URL = "https://raw.githubusercontent.com/ThePandemoniumInstitute/botc-release/main/resources/data/roles.json"
 SCHEMA_URL = "https://raw.githubusercontent.com/ThePandemoniumInstitute/botc-release/main/script-schema.json"
 
@@ -24,9 +26,12 @@ def _normalize_name(text: str) -> str:
 
 @lru_cache(maxsize=1)
 def get_official_roles() -> list[OfficialRole]:
-    response = requests.get(ROLES_URL, timeout=30)
-    response.raise_for_status()
-    payload = response.json()
+    if OFFICIAL_ROLES_PATH.exists():
+        payload = _get_raw_official_roles()
+    else:
+        response = requests.get(ROLES_URL, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
 
     roles: list[OfficialRole] = []
     for item in payload:
