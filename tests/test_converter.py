@@ -14,7 +14,7 @@ from PIL.PngImagePlugin import PngInfo
 from clocktower_img2json.converter import (
     _extract_embedded_json,
     _extract_lines,
-    _extract_script_deepseek,
+    _extract_script_gemini,
 )
 
 
@@ -44,7 +44,7 @@ def _png_bytes_with_json(script: list) -> bytes:
 
 # --- _extract_lines (always local OCR) ---
 
-def test_extract_lines_uses_local_ocr_when_deepseek_key_missing():
+def test_extract_lines_uses_local_ocr_when_gemini_key_missing():
     image = Image.new("RGB", (300, 200), color="white")
     with patch.dict("os.environ", {}, clear=True), patch(
         "clocktower_img2json.converter.pytesseract.image_to_data",
@@ -55,10 +55,10 @@ def test_extract_lines_uses_local_ocr_when_deepseek_key_missing():
     assert lines[0].text == "Washerwoman"
 
 
-def test_extract_lines_always_uses_local_ocr_even_with_deepseek_key():
-    """_extract_lines is now local-only; DeepSeek operates at a higher level."""
+def test_extract_lines_always_uses_local_ocr_even_with_gemini_key():
+    """_extract_lines is now local-only; Gemini operates at a higher level."""
     image = Image.new("RGB", (300, 200), color="white")
-    with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
         "clocktower_img2json.converter.pytesseract.image_to_data",
         return_value=_sample_tesseract_payload(),
     ):
@@ -67,105 +67,108 @@ def test_extract_lines_always_uses_local_ocr_even_with_deepseek_key():
     assert lines[0].text == "Washerwoman"
 
 
-# --- _extract_script_deepseek ---
+# --- _extract_script_gemini ---
 
-def test_extract_script_deepseek_returns_none_without_api_key():
+def test_extract_script_gemini_returns_none_without_api_key():
     with patch.dict("os.environ", {}, clear=True):
-        result = _extract_script_deepseek("https://example.com/assets/abc/original.png")
+        result = _extract_script_gemini(_png_bytes_with_json(["washerwoman"]))
     assert result is None
 
 
-def test_extract_script_deepseek_returns_script_list():
-    deepseek_body = {
-        "choices": [
+def test_extract_script_gemini_returns_script_list():
+    gemini_body = {
+        "candidates": [
             {
-                "message": {
-                    "content": '[{"id": "_meta", "name": "Test Script"}, "washerwoman"]',
+                "content": {
+                    "parts": [{"text": '[{"id": "_meta", "name": "Test Script"}, "washerwoman"]'}]
                 }
             }
         ]
     }
     mock_response = Mock()
-    mock_response.json.return_value = deepseek_body
+    mock_response.json.return_value = gemini_body
     mock_response.raise_for_status.return_value = None
 
-    with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
         "clocktower_img2json.converter.requests.post", return_value=mock_response
     ):
-        result = _extract_script_deepseek("https://example.com/assets/abc/original.png")
+        result = _extract_script_gemini(_png_bytes_with_json(["washerwoman"]))
 
     assert result == [{"id": "_meta", "name": "Test Script"}, "washerwoman"]
 
 
-def test_extract_script_deepseek_uses_configured_model():
-    """DEEPSEEK_OCR_MODEL env var is passed in the request payload."""
+def test_extract_script_gemini_uses_configured_model():
+    """GEMINI_MODEL env var is used in the request URL."""
     mock_response = Mock()
-    mock_response.json.return_value = {"choices": [{"message": {"content": '["washerwoman"]'}}]}
+    mock_response.json.return_value = {"candidates": [{"content": {"parts": [{"text": '["washerwoman"]'}]}}]}
     mock_response.raise_for_status.return_value = None
 
     with patch.dict(
         "os.environ",
-        {"DEEPSEEK_API_KEY": "key", "DEEPSEEK_OCR_MODEL": "deepseek-v4-pro"},
+        {"GEMINI_API_KEY": "key", "GEMINI_MODEL": "gemini-3.5-flash-preview"},
         clear=True,
     ), patch(
         "clocktower_img2json.converter.requests.post", return_value=mock_response
     ) as mock_post:
-        _extract_script_deepseek("https://example.com/assets/abc/original.png")
+        _extract_script_gemini(_png_bytes_with_json(["washerwoman"]))
 
-    call_payload = mock_post.call_args[1]["json"]
-    assert call_payload["model"] == "deepseek-v4-pro"
+    assert (
+        mock_post.call_args[0][0]
+        == "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-preview:generateContent?key=key"
+    )
 
 
-def test_extract_script_deepseek_includes_hint_in_prompt():
+def test_extract_script_gemini_includes_hint_in_prompt():
     mock_response = Mock()
-    mock_response.json.return_value = {"choices": [{"message": {"content": '["washerwoman"]'}}]}
+    mock_response.json.return_value = {"candidates": [{"content": {"parts": [{"text": '["washerwoman"]'}]}}]}
     mock_response.raise_for_status.return_value = None
 
     hint = [{"id": "_meta", "name": "Hint Script"}]
-    with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "key"}, clear=True), patch(
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "key"}, clear=True), patch(
         "clocktower_img2json.converter.requests.post", return_value=mock_response
     ) as mock_post:
-        _extract_script_deepseek("https://example.com/assets/abc/original.png", embedded_hint=hint)
+        _extract_script_gemini(_png_bytes_with_json(["washerwoman"]), embedded_hint=hint)
 
-    content_parts = mock_post.call_args[1]["json"]["messages"][0]["content"]
-    prompt_text = next(p["text"] for p in content_parts if p["type"] == "text")
+    content_parts = mock_post.call_args[1]["json"]["contents"][0]["parts"]
+    prompt_text = next(p["text"] for p in content_parts if "text" in p)
     assert "Hint Script" in prompt_text
 
 
-def test_extract_script_deepseek_returns_none_and_logs_on_failure(caplog):
-    with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
+def test_extract_script_gemini_returns_none_and_logs_on_failure(caplog):
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
         "clocktower_img2json.converter.requests.post",
         side_effect=RuntimeError("network error"),
     ), caplog.at_level(logging.WARNING, logger="clocktower_img2json.converter"):
-        result = _extract_script_deepseek("https://example.com/assets/abc/original.png")
+        result = _extract_script_gemini(_png_bytes_with_json(["washerwoman"]))
 
     assert result is None
     assert caplog.records
 
 
-def test_extract_script_deepseek_logs_vision_hint_on_400(caplog):
+def test_extract_script_gemini_logs_redacted_request_body_on_400(caplog):
     import requests as req_module
 
     mock_response = Mock()
     mock_response.status_code = 400
-    mock_response.text = '{"error":{"message":"invalid image_url"}}'
+    mock_response.text = '{"error":{"message":"invalid inline_data"}}'
     mock_response.request = Mock(
-        body='{"model":"deepseek-vl2","messages":[{"role":"user","content":[{"type":"text","text":"prompt"},{"type":"image_url","image_url":{"url":"https://example.com/assets/abc/original.png"}}]}]}'
+        body='{"contents":[{"parts":[{"text":"prompt"},{"inline_data":{"mime_type":"image/png","data":"AAA"}}]}]}'
     )
     http_error = req_module.exceptions.HTTPError(
-        "400 Client Error: Bad Request for url: https://api.deepseek.com/chat/completions",
+        "400 Client Error: Bad Request for url: https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
         response=mock_response,
     )
-    with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
         "clocktower_img2json.converter.requests.post",
         side_effect=http_error,
     ), caplog.at_level(logging.WARNING, logger="clocktower_img2json.converter"):
-        result = _extract_script_deepseek("https://example.com/assets/abc/original.png")
+        result = _extract_script_gemini(_png_bytes_with_json(["washerwoman"]))
 
     assert result is None
     assert any("request body sent" in record.message.lower() for record in caplog.records)
     assert any("response body received" in record.message.lower() for record in caplog.records)
-    assert any("invalid image_url" in record.message for record in caplog.records)
+    assert any("invalid inline_data" in record.message for record in caplog.records)
+    assert any('"data": "<redacted>"' in record.message for record in caplog.records)
 
 
 # --- _extract_embedded_json ---
@@ -191,12 +194,9 @@ def test_extract_embedded_json_ignores_non_json_text_chunks():
     assert _extract_embedded_json(buf.getvalue()) is None
 
 
-def test_extract_lines_falls_back_to_local_when_deepseek_fails():
+def test_extract_lines_falls_back_to_local_when_gemini_is_configured():
     image = Image.new("RGB", (300, 200), color="white")
-    with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
-        "clocktower_img2json.converter.requests.post",
-        side_effect=RuntimeError("deepseek unavailable"),
-    ), patch(
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
         "clocktower_img2json.converter.pytesseract.image_to_data",
         return_value=_sample_tesseract_payload(),
     ):

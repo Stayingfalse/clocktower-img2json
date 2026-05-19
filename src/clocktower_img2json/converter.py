@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import uuid
+from base64 import b64encode
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -18,8 +19,8 @@ from .parser import OCRLine, crop_icon_for_role, parse_script_lines, save_icon, 
 
 logger = logging.getLogger(__name__)
 
-_DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_DEEPSEEK_PROMPT = (
+_GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+_GEMINI_PROMPT = (
     "You are processing a Blood on the Clocktower custom script image."
     " Identify every character/role visible and return ONLY a valid JSON array."
     " The array should include:"
@@ -101,7 +102,8 @@ def _extract_json_payload(content: object) -> str:
         text = "".join(
             str(part.get("text", ""))
             for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
+            if isinstance(part, dict)
+            and ((part.get("type") == "text") or ("text" in part and "inline_data" not in part))
         ).strip()
     else:
         text = ""
@@ -147,20 +149,45 @@ def _extract_embedded_json(image_bytes: bytes) -> list | None:
     return None
 
 
-def _extract_script_deepseek(image_url: str, embedded_hint: list | None = None) -> list | None:
-    """Call DeepSeek to extract a full script JSON array from the image URL.
+def _redact_gemini_payload(payload: dict) -> dict:
+    redacted = json.loads(json.dumps(payload))
+    for content in redacted.get("contents", []):
+        if not isinstance(content, dict):
+            continue
+        for part in content.get("parts", []):
+            if not isinstance(part, dict):
+                continue
+            inline_data = part.get("inline_data")
+            if isinstance(inline_data, dict) and "data" in inline_data:
+                inline_data["data"] = "<redacted>"
+    return redacted
 
-    Returns the parsed script list, or None if DeepSeek is not configured or
+
+def _redact_request_body_for_log(request_body: str | None, fallback_payload: dict) -> str:
+    if request_body:
+        try:
+            parsed = json.loads(request_body)
+            if isinstance(parsed, dict):
+                return json.dumps(_redact_gemini_payload(parsed), ensure_ascii=False)
+        except Exception:
+            pass
+    return json.dumps(_redact_gemini_payload(fallback_payload), ensure_ascii=False)
+
+
+def _extract_script_gemini(image_bytes: bytes, embedded_hint: list | None = None) -> list | None:
+    """Call Google AI Studio Gemini to extract a full script JSON array from the image.
+
+    Returns the parsed script list, or None if Gemini is not configured or
     the call fails (errors are logged; exceptions are not propagated).
     """
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return None
 
-    model = os.getenv("DEEPSEEK_OCR_MODEL", "deepseek-vl2")
-    endpoint = os.getenv("DEEPSEEK_API_URL", _DEEPSEEK_URL)
+    model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+    endpoint = os.getenv("GEMINI_API_URL", _GEMINI_API_URL).rstrip("/")
 
-    prompt = _DEEPSEEK_PROMPT
+    prompt = _GEMINI_PROMPT
     if embedded_hint:
         try:
             hint_json = json.dumps(embedded_hint, ensure_ascii=False)
@@ -172,35 +199,40 @@ def _extract_script_deepseek(image_url: str, embedded_hint: list | None = None) 
         except Exception:
             pass
 
+    image_b64 = b64encode(image_bytes).decode("ascii")
     payload = {
-        "model": model,
-        "temperature": 0,
-        "messages": [
+        "generationConfig": {"temperature": 0},
+        "contents": [
             {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}},
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": image_b64,
+                        }
+                    },
                 ],
             }
         ],
     }
+    url = f"{endpoint}/{model}:generateContent?key={api_key}"
 
     try:
         response = requests.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            url,
+            headers={"Content-Type": "application/json"},
             json=payload,
             timeout=60,
         )
         response.raise_for_status()
         body = response.json()
-        choices = body.get("choices") or []
-        if not choices:
-            raise ValueError("No choices returned")
-        message = choices[0].get("message") if isinstance(choices[0], dict) else {}
-        content = message.get("content") if isinstance(message, dict) else None
-        text = _extract_json_payload(content)
+        candidates = body.get("candidates") or []
+        if not candidates:
+            raise ValueError("No candidates returned")
+        content = candidates[0].get("content") if isinstance(candidates[0], dict) else {}
+        parts = content.get("parts") if isinstance(content, dict) else None
+        text = _extract_json_payload(parts)
         parsed = json.loads(text)
         if not isinstance(parsed, list):
             raise ValueError("Model output must be a JSON array")
@@ -218,13 +250,12 @@ def _extract_script_deepseek(image_url: str, embedded_hint: list | None = None) 
                 elif request_body_raw is not None:
                     request_body = str(request_body_raw)
             response_body = getattr(exc.response, "text", None)
-        if request_body is None:
-            request_body = json.dumps(payload, ensure_ascii=False)
+        request_body = _redact_request_body_for_log(request_body, payload)
         if response_body is None:
             response_body = str(exc)
 
         logger.warning(
-            "DeepSeek script extraction failed with HTTP %s; falling back to local OCR."
+            "Gemini script extraction failed with HTTP %s; falling back to local OCR."
             " Request body sent: %s"
             " Response body received: %s",
             status_code,
@@ -233,7 +264,7 @@ def _extract_script_deepseek(image_url: str, embedded_hint: list | None = None) 
         )
         return None
     except Exception as exc:
-        logger.warning("DeepSeek script extraction failed; falling back to local OCR: %s", exc)
+        logger.warning("Gemini script extraction failed; falling back to local OCR: %s", exc)
         return None
 
 
@@ -271,7 +302,10 @@ def convert_image_bytes_to_script(
 
     _ = source_name
     original_path = output_dir / "original.png"
-    image.save(original_path, format="PNG")
+    normalized_image_buffer = BytesIO()
+    image.save(normalized_image_buffer, format="PNG")
+    normalized_image_bytes = normalized_image_buffer.getvalue()
+    original_path.write_bytes(normalized_image_bytes)
 
     schema = get_script_schema()
 
@@ -280,22 +314,18 @@ def convert_image_bytes_to_script(
     if embedded_json:
         logger.info("Embedded JSON found in image metadata (%d entries)", len(embedded_json))
 
-    # --- 2. Try DeepSeek with the public image URL ---
-    # PUBLIC_BASE_URL overrides request.base_url for reverse-proxy deployments.
-    effective_base_url = os.getenv("PUBLIC_BASE_URL", public_base_url).rstrip("/")
-    image_url = f"{effective_base_url}/assets/{request_id}/original.png"
-
-    deepseek_script = _extract_script_deepseek(image_url, embedded_hint=embedded_json)
-    if deepseek_script is not None:
-        logger.info("DeepSeek extracted %d entries from script image", len(deepseek_script))
-        _apply_meta_overrides(deepseek_script, script_name_override, author_override)
-        jsonschema.validate(deepseek_script, schema)
+    # --- 2. Try Google AI Studio Gemini with the normalized image bytes ---
+    gemini_script = _extract_script_gemini(normalized_image_bytes, embedded_hint=embedded_json)
+    if gemini_script is not None:
+        logger.info("Gemini extracted %d entries from script image", len(gemini_script))
+        _apply_meta_overrides(gemini_script, script_name_override, author_override)
+        jsonschema.validate(gemini_script, schema)
         script_path = output_dir / "script.json"
         with script_path.open("w", encoding="utf-8") as f:
-            json.dump(deepseek_script, f, indent=2, ensure_ascii=False)
+            json.dump(gemini_script, f, indent=2, ensure_ascii=False)
         return ConversionResult(
             request_id=request_id,
-            script=deepseek_script,
+            script=gemini_script,
             script_path=script_path,
             image_path=original_path,
             image_urls={},
