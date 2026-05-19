@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clocktower_img2json.api import create_app
-from clocktower_img2json.data import OfficialRole
+from clocktower_img2json.converter import ConversionResult
 
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
@@ -62,9 +62,14 @@ def client(tmp_path):
     return TestClient(app, raise_server_exceptions=True), tmp_path, db_path
 
 
-SAMPLE_OFFICIAL_ROLES = [
-    OfficialRole(id="washerwoman", name="Washerwoman", team="townsfolk", ability="..."),
-]
+def _mock_conversion_result(uid: str, script: list) -> ConversionResult:
+    return ConversionResult(
+        request_id=uid,
+        script=script,
+        script_path=Path("/tmp/script.json"),
+        image_path=Path("/tmp/original.png"),
+        image_urls={},
+    )
 
 
 def _seed_script(tmp_path: Path, uid: str, script: list) -> None:
@@ -87,17 +92,25 @@ def test_edit_page_serves_dashboard(client):
     assert "Save Changes" in response.text
 
 
+def test_pretty_script_dashboard_route_serves_editor(client):
+    tc, _, _ = client
+    response = tc.get("/script/abc12345/")
+    assert response.status_code == 200
+    assert "Save Changes" in response.text
+
+
 def test_upload_returns_uuid_and_script(client):
     tc, _, _ = client
     png_bytes = _make_png_bytes()
-    fake_icon = np.zeros((60, 60, 3), dtype=np.uint8)
-    fake_rows = [
-        {"raw_name": "Washerwoman", "ability": "You start knowing something.", "icon_crop": fake_icon},
-        {"raw_name": "My Homebrew", "ability": "Custom ability.", "icon_crop": fake_icon},
+    fake_script = [
+        {"id": "_meta", "name": "Test Script"},
+        "washerwoman",
+        {"id": "my-homebrew", "name": "My Homebrew", "ability": "Custom ability.", "team": "townsfolk"},
     ]
 
-    with patch("clocktower_img2json.api.process_script_image", return_value=("Test Script", fake_rows)), patch(
-        "clocktower_img2json.api.get_official_roles", return_value=SAMPLE_OFFICIAL_ROLES
+    with patch(
+        "clocktower_img2json.api.convert_image_bytes_to_script",
+        side_effect=lambda **_: _mock_conversion_result("abc12345", fake_script),
     ):
         response = tc.post(
             "/api/upload",
@@ -114,8 +127,9 @@ def test_upload_saves_script_json_and_logo_to_disk(client):
     tc, tmp_path, _ = client
     png_bytes = _make_png_bytes()
 
-    with patch("clocktower_img2json.api.process_script_image", return_value=("Saved Script", [])), patch(
-        "clocktower_img2json.api.get_official_roles", return_value=[]
+    with patch(
+        "clocktower_img2json.api.convert_image_bytes_to_script",
+        side_effect=lambda **_: _mock_conversion_result("abc12345", [{"id": "_meta", "name": "Saved Script"}]),
     ):
         response = tc.post(
             "/api/upload",
@@ -131,8 +145,9 @@ def test_upload_records_only_metadata_in_db(client):
     tc, _, db_path = client
     png_bytes = _make_png_bytes()
 
-    with patch("clocktower_img2json.api.process_script_image", return_value=("DB Script", [])), patch(
-        "clocktower_img2json.api.get_official_roles", return_value=[]
+    with patch(
+        "clocktower_img2json.api.convert_image_bytes_to_script",
+        side_effect=lambda **_: _mock_conversion_result("abc12345", [{"id": "_meta", "name": "DB Script"}]),
     ):
         response = tc.post(
             "/api/upload",
@@ -149,11 +164,14 @@ def test_upload_records_only_metadata_in_db(client):
 def test_upload_homebrew_role_uses_script_asset_route(client):
     tc, _, _ = client
     png_bytes = _make_png_bytes()
-    fake_icon = np.zeros((60, 60, 3), dtype=np.uint8)
-    fake_rows = [{"raw_name": "My Homebrew", "ability": "Does something.", "icon_crop": fake_icon}]
+    fake_script = [
+        {"id": "_meta", "name": "Script"},
+        {"id": "my-homebrew", "name": "My Homebrew", "ability": "Does something.", "team": "townsfolk"},
+    ]
 
-    with patch("clocktower_img2json.api.process_script_image", return_value=("Script", fake_rows)), patch(
-        "clocktower_img2json.api.get_official_roles", return_value=[]
+    with patch(
+        "clocktower_img2json.api.convert_image_bytes_to_script",
+        side_effect=lambda **_: _mock_conversion_result("abc12345", fake_script),
     ):
         response = tc.post(
             "/api/upload",

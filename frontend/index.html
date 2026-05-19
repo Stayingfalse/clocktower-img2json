@@ -318,7 +318,7 @@
           throw new Error('The backend did not return a script identifier.');
         }
 
-        window.location.href = `/dashboard/edit.html?id=${encodeURIComponent(payload.uuid)}`;
+        window.location.href = `/script/${encodeURIComponent(payload.uuid)}/`;
       } catch (error) {
         showOverlay(false);
         uploadButton.disabled = false;

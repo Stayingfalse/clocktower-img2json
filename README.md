@@ -48,7 +48,7 @@ docker run --rm -p 8000:8000 \
 ## Core routes
 
 - `GET /` — upload dashboard
-- `GET /dashboard/edit.html?id=<uuid>` — editor dashboard
+- `GET /script/<uuid>/` — editor dashboard
 - `POST /api/upload` — ingest an image, write `/app/storage/<uuid>/script.json`, and create an audit record
 - `GET /api/script/<uuid>` — read `script.json` directly from disk and return JSON
 - `POST /api/script/<uuid>/update?edited_by=<name>` — overwrite `script.json` and append an edit history row

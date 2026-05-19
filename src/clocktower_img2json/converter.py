@@ -77,8 +77,9 @@ def convert_image_bytes_to_script(
     source_name: str = "original.png",
     script_name_override: str | None = None,
     author_override: str | None = None,
+    request_id: str | None = None,
 ) -> ConversionResult:
-    request_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
     output_dir = storage_dir / request_id
     images_dir = output_dir / "images"
     _ensure_dir(images_dir)
