@@ -72,3 +72,24 @@ def test_extract_lines_falls_back_to_local_when_deepseek_fails():
 
     assert len(lines) == 1
     assert lines[0].text == "Washerwoman"
+
+
+def test_extract_lines_logs_vision_hint_on_400(caplog):
+    import logging
+    import requests as req_module
+
+    image = Image.new("RGB", (300, 200), color="white")
+    http_error = req_module.exceptions.HTTPError("400 Client Error: Bad Request for url: https://api.deepseek.com/chat/completions")
+
+    with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
+        "clocktower_img2json.converter.requests.post",
+        side_effect=http_error,
+    ), patch(
+        "clocktower_img2json.converter.pytesseract.image_to_data",
+        return_value=_sample_tesseract_payload(),
+    ), caplog.at_level(logging.WARNING, logger="clocktower_img2json.converter"):
+        lines = _extract_lines(image)
+
+    assert len(lines) == 1
+    assert lines[0].text == "Washerwoman"
+    assert any("vision" in record.message.lower() for record in caplog.records)

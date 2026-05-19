@@ -183,7 +183,16 @@ def _extract_lines(image: Image.Image) -> list[OCRLine]:
         if deepseek_lines:
             return deepseek_lines
     except Exception as exc:
-        logger.warning("DeepSeek OCR failed; falling back to local OCR: %s", exc)
+        msg = str(exc)
+        if "400" in msg or "Bad Request" in msg:
+            logger.warning(
+                "DeepSeek OCR failed (400 Bad Request); falling back to local OCR."
+                " The configured model may not support vision inputs."
+                " Set DEEPSEEK_OCR_MODEL to a vision-capable model (e.g. deepseek-vl2). Error: %s",
+                exc,
+            )
+        else:
+            logger.warning("DeepSeek OCR failed; falling back to local OCR: %s", exc)
     return _extract_lines_local(image)
 
 

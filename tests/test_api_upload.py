@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import cv2
+import jsonschema
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -233,3 +234,21 @@ def test_get_asset_path_traversal_blocked(client):
     tc, _, _ = client
     response = tc.get("/script/abc12345/..%2F..%2Fetc%2Fpasswd")
     assert response.status_code in (400, 404)
+
+
+def test_upload_returns_422_when_schema_validation_fails(client):
+    tc, _, _ = client
+    png_bytes = _make_png_bytes()
+    schema_error = jsonschema.ValidationError("[] is too short")
+
+    with patch(
+        "clocktower_img2json.api.convert_image_bytes_to_script",
+        side_effect=schema_error,
+    ):
+        response = tc.post(
+            "/api/upload",
+            files={"image": ("script.png", io.BytesIO(png_bytes), "image/png")},
+        )
+
+    assert response.status_code == 422
+    assert "minimum requirements" in response.json()["detail"]
