@@ -9,7 +9,7 @@ from pathlib import Path
 
 import cv2
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 
@@ -121,9 +121,18 @@ def create_app(
         else Path(__file__).resolve().parents[2] / "frontend"
     )
 
-    app.mount("/assets", StaticFiles(directory=str(storage_path)), name="assets")
+    # Ensure frontend directory exists to prevent startup crashes
+    if not app.state.frontend_path.exists():
+        print(f"CRITICAL WARNING: Frontend directory not found at {app.state.frontend_path}!")
 
-    @app.get("/", response_class=HTMLResponse)
+    app.mount("/assets", StaticFiles(directory=str(storage_path)), name="assets")
+    app.mount("/dashboard", StaticFiles(directory=str(app.state.frontend_path), html=True), name="frontend")
+
+    @app.get("/")
+    async def root_redirect():
+        return RedirectResponse(url="/dashboard/index.html")
+
+    @app.get("/index.html", response_class=HTMLResponse)
     def index_page():
         return FileResponse(_frontend_path(app.state.frontend_path, "index.html"))
 
