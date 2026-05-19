@@ -152,6 +152,57 @@ def create_app(storage_dir: str = "storage", db_path: Path | None = None) -> Fas
         return {"uuid": uid, "script": script}
 
     # ------------------------------------------------------------------
+    # GET /api/script/{uuid_str} — fetch script from SQLite
+    # ------------------------------------------------------------------
+    @app.get("/api/script/{uuid_str}")
+    def get_script(uuid_str: str):
+        if not _SAFE_UUID_RE.match(uuid_str):
+            raise HTTPException(status_code=400, detail="Invalid identifier")
+        safe_uid = os.path.basename(uuid_str)
+        with sqlite3.connect(_db_path) as conn:
+            row = conn.execute(
+                "SELECT custom_data FROM scripts WHERE uuid = ?",
+                (safe_uid,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Script not found")
+        return JSONResponse(content=json.loads(row[0]))
+
+    # ------------------------------------------------------------------
+    # POST /api/script/{uuid_str}/update — update script file + DB row
+    # ------------------------------------------------------------------
+    @app.post("/api/script/{uuid_str}/update")
+    async def update_script(uuid_str: str, request: Request):
+        if not _SAFE_UUID_RE.match(uuid_str):
+            raise HTTPException(status_code=400, detail="Invalid identifier")
+        safe_uid = os.path.basename(uuid_str)
+
+        try:
+            updated_script = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+
+        if not isinstance(updated_script, list):
+            raise HTTPException(status_code=400, detail="Request body must be a JSON array")
+
+        script_json_path = (storage_path / safe_uid / "script.json").resolve()
+        if storage_path.resolve() not in script_json_path.parents:
+            raise HTTPException(status_code=400, detail="Invalid path")
+
+        script_json_path.parent.mkdir(parents=True, exist_ok=True)
+        with script_json_path.open("w", encoding="utf-8") as f:
+            json.dump(updated_script, f, indent=2, ensure_ascii=False)
+
+        with sqlite3.connect(_db_path) as conn:
+            conn.execute(
+                "UPDATE scripts SET custom_data = ? WHERE uuid = ?",
+                (json.dumps(updated_script, ensure_ascii=False), safe_uid),
+            )
+            conn.commit()
+
+        return {"status": "ok", "uuid": safe_uid}
+
+    # ------------------------------------------------------------------
     # GET /script/{uuid_str}/script.json
     # ------------------------------------------------------------------
     @app.get("/script/{uuid_str}/script.json")
