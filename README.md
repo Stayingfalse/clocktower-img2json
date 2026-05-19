@@ -26,6 +26,23 @@ Or from the Docker-oriented wrapper:
 
 ```bash
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
+
+## Docker
+
+Build:
+
+```bash
+docker build -t clocktower-img2json .
+```
+
+Run:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/storage:/app/storage" \
+  clocktower-img2json
+```
 ```
 
 ## Core routes
