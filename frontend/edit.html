@@ -76,6 +76,13 @@
       flex-wrap: wrap;
     }
 
+    .toolbar-group {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
     .toolbar input {
       min-width: 220px;
       height: 46px;
@@ -102,6 +109,13 @@
 
     .toolbar button:hover:not(:disabled) { transform: translateY(-1px); }
     .toolbar button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .toolbar button.secondary,
+    .card-actions button.secondary {
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
 
     .page {
       max-width: 1280px;
@@ -211,6 +225,14 @@
       gap: 16px;
     }
 
+    .card-topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
     .card-head {
       display: flex;
       gap: 14px;
@@ -271,6 +293,10 @@
     .badge.standard { color: var(--accent-2); }
     .badge.custom { color: var(--warning); }
 
+    .badge.deleted {
+      color: var(--danger);
+    }
+
     .field-grid {
       display: grid;
       gap: 12px;
@@ -303,6 +329,32 @@
 
     .field textarea { min-height: 110px; }
 
+    .card-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .card-actions button {
+      min-height: 42px;
+      border: 0;
+      border-radius: 14px;
+      padding: 0 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .card-actions button.danger {
+      background: rgba(251,113,133,0.14);
+      color: #ffd8df;
+      border-color: rgba(251,113,133,0.35);
+    }
+
     .empty {
       padding: 28px;
       text-align: center;
@@ -330,8 +382,14 @@
         <strong id="brandTitle">Clocktower Script Dashboard</strong>
       </div>
       <div class="toolbar">
-        <input id="editorInput" type="text" maxlength="80" placeholder="Editor nickname">
-        <button id="saveButton" type="button">Save Changes</button>
+        <div class="toolbar-group">
+          <button id="addOfficialButton" type="button" class="secondary">Add Official Role</button>
+          <button id="addHomebrewButton" type="button" class="secondary">Add Homebrew Role</button>
+        </div>
+        <div class="toolbar-group">
+          <input id="editorInput" type="text" maxlength="80" placeholder="Editor nickname">
+          <button id="saveButton" type="button">Save Changes</button>
+        </div>
       </div>
     </div>
   </header>
@@ -354,7 +412,7 @@
           <div class="meta-chip">Entries: <strong id="entryCountLabel">0</strong></div>
           <a id="jsonLink" class="meta-chip" href="#" target="_blank" rel="noopener">Open script JSON</a>
         </div>
-        <p>Standard tokens are read-only references to official roles. Custom homebrew tokens can be edited inline and saved back to disk with an audit history entry.</p>
+        <p>Every imported token can now be added, removed, or edited before saving back to disk with an audit history entry.</p>
         <div class="status" id="statusLine"></div>
       </aside>
     </section>
@@ -377,11 +435,15 @@
     const bannerImage = document.getElementById('bannerImage');
     const cards = document.getElementById('cards');
     const saveButton = document.getElementById('saveButton');
+    const addOfficialButton = document.getElementById('addOfficialButton');
+    const addHomebrewButton = document.getElementById('addHomebrewButton');
     const editorInput = document.getElementById('editorInput');
     const statusLine = document.getElementById('statusLine');
     const jsonLink = document.getElementById('jsonLink');
 
     let scriptData = [];
+    let officialRoles = [];
+    let officialRoleMap = new Map();
 
     function setStatus(message = '', tone = '') {
       statusLine.textContent = message;
@@ -398,13 +460,122 @@
     }
 
     function roleIsStandard(role) {
-      return typeof role === 'string' || !role || !role.name;
+      return role?._kind === 'official';
     }
 
     function bannerFallback() {
       bannerImage.alt = 'Script banner unavailable';
       bannerImage.style.display = 'none';
       bannerImage.parentElement.innerHTML = '<div style="padding:32px;text-align:center;color:#9da7b5;">Banner unavailable</div>';
+    }
+
+    function slugifyId(value) {
+      return String(value ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 50);
+    }
+
+    function nextHomebrewId(usedIds = new Set()) {
+      let index = 1;
+      while (usedIds.has(`homebrew-${index}`)) {
+        index += 1;
+      }
+      return `homebrew-${index}`;
+    }
+
+    function normalizeEntry(entry) {
+      if (entry && typeof entry === 'object' && entry.id === '_meta') {
+        return { ...entry };
+      }
+
+      if (typeof entry === 'string') {
+        const role = officialRoleMap.get(entry);
+        return {
+          _kind: 'official',
+          id: entry,
+          name: role?.name || entry,
+          team: role?.team || '',
+          ability: role?.ability || '',
+        };
+      }
+
+      if (entry && typeof entry === 'object') {
+        const roleId = String(entry.id || '').trim();
+        const looksOfficial = roleId && !entry.name && !entry.ability && !entry.team && !entry.image;
+        if (looksOfficial) {
+          const role = officialRoleMap.get(roleId);
+          return {
+            _kind: 'official',
+            id: roleId,
+            name: role?.name || roleId,
+            team: role?.team || '',
+            ability: role?.ability || '',
+          };
+        }
+        return {
+          _kind: 'custom',
+          id: roleId || nextHomebrewId(new Set(scriptData.map((item) => item?.id).filter(Boolean))),
+          name: String(entry.name || '').trim(),
+          ability: String(entry.ability || '').trim(),
+          team: String(entry.team || 'townsfolk').trim() || 'townsfolk',
+          image: String(entry.image || '').trim(),
+        };
+      }
+
+      return {
+        _kind: 'custom',
+        id: nextHomebrewId(new Set(scriptData.map((item) => item?.id).filter(Boolean))),
+        name: '',
+        ability: '',
+        team: 'townsfolk',
+        image: '',
+      };
+    }
+
+    function syncEntriesFromDom() {
+      const usedIds = new Set();
+      scriptData = scriptData.map((entry, index) => {
+        if (entry && typeof entry === 'object' && entry.id === '_meta') {
+          return entry;
+        }
+
+        const card = cards.querySelector(`[data-index="${index}"]`);
+        if (!card) {
+          return entry;
+        }
+
+        const kind = card.querySelector('[data-field="kind"]').value;
+        if (kind === 'official') {
+          const roleId = card.querySelector('[data-field="official-id"]').value;
+          const role = officialRoleMap.get(roleId);
+          if (roleId) {
+            usedIds.add(roleId);
+          }
+          return {
+            _kind: 'official',
+            id: roleId,
+            name: role?.name || roleId,
+            team: role?.team || '',
+            ability: role?.ability || '',
+          };
+        }
+
+        let roleId = slugifyId(card.querySelector('[data-field="id"]').value.trim());
+        if (!roleId || usedIds.has(roleId)) {
+          roleId = nextHomebrewId(usedIds);
+        }
+        usedIds.add(roleId);
+        return {
+          _kind: 'custom',
+          id: roleId,
+          name: card.querySelector('[data-field="name"]').value.trim(),
+          ability: card.querySelector('[data-field="ability"]').value.trim(),
+          team: card.querySelector('[data-field="team"]').value,
+          image: entry?.image || '',
+        };
+      });
     }
 
     function renderCards() {
@@ -416,35 +587,67 @@
         return;
       }
 
-      cards.innerHTML = entries.map((entry, index) => {
+      cards.innerHTML = scriptData.map((entry, index) => {
+        if (entry && typeof entry === 'object' && entry.id === '_meta') {
+          return '';
+        }
         const standard = roleIsStandard(entry);
-        const roleId = typeof entry === 'string' ? entry : entry.id;
-        const displayName = standard ? roleId : (entry.name || roleId);
+        const roleId = entry.id || '';
+        const displayName = standard ? (entry.name || roleId) : (entry.name || roleId || 'New homebrew role');
         const thumb = standard
           ? '<div class="thumb">🜁</div>'
           : `<div class="thumb"><img src="/script/${encodeURIComponent(scriptId)}/script.${encodeURIComponent(roleId)}.png" alt="${escapeHtml(displayName)} thumbnail" onerror="this.closest('.thumb').innerHTML='🜂';"></div>`;
+        const officialOptions = (officialRoles.some((role) => role.id === roleId)
+          ? officialRoles
+          : [{ id: roleId, name: entry.name || roleId, team: entry.team || '', ability: entry.ability || '' }, ...officialRoles]
+        ).filter((role) => role.id).map((role) => (
+          `<option value="${escapeHtml(role.id)}" ${role.id === roleId ? 'selected' : ''}>${escapeHtml(role.name)} (${escapeHtml(role.id)})</option>`
+        )).join('');
 
         return `
           <article class="panel card" data-index="${index}" data-role-id="${escapeHtml(roleId)}" data-standard="${standard}">
+            <div class="card-topbar">
+              <div class="badge-row">
+                <span class="badge ${standard ? 'standard' : 'custom'}">${standard ? 'Official Role' : 'Custom Role'}</span>
+                <span class="badge">ID: ${escapeHtml(roleId || 'pending')}</span>
+              </div>
+              <div class="card-actions">
+                <button type="button" class="danger" data-action="remove">Remove</button>
+              </div>
+            </div>
             <div class="card-head">
               ${thumb}
               <div class="card-title">
                 <h2>${escapeHtml(displayName)}</h2>
                 <div class="badge-row">
-                  <span class="badge ${standard ? 'standard' : 'custom'}">${standard ? 'Standard Token' : 'Custom Token'}</span>
-                  <span class="badge">ID: ${escapeHtml(roleId)}</span>
+                  <span class="badge">${escapeHtml(entry.team || 'unassigned')}</span>
                 </div>
               </div>
             </div>
-            ${standard ? `
-              <div class="field-grid">
-                <div class="field">
-                  <label>Role reference</label>
-                  <input type="text" value="${escapeHtml(roleId)}" disabled>
-                </div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="kind-${index}">Entry Type</label>
+                <select id="kind-${index}" data-field="kind">
+                  <option value="official" ${standard ? 'selected' : ''}>Official role</option>
+                  <option value="custom" ${standard ? '' : 'selected'}>Custom role</option>
+                </select>
               </div>
-            ` : `
-              <div class="field-grid">
+              ${standard ? `
+                <div class="field">
+                  <label for="official-${index}">Official Role</label>
+                  <select id="official-${index}" data-field="official-id">
+                    ${officialOptions}
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="official-ability-${index}">Official Ability</label>
+                  <textarea id="official-ability-${index}" readonly>${escapeHtml(entry.ability || '')}</textarea>
+                </div>
+              ` : `
+                <div class="field">
+                  <label for="id-${index}">Role ID</label>
+                  <input id="id-${index}" data-field="id" type="text" value="${escapeHtml(roleId)}">
+                </div>
                 <div class="field">
                   <label for="name-${index}">Character Name</label>
                   <input id="name-${index}" data-field="name" type="text" value="${escapeHtml(entry.name || '')}">
@@ -459,8 +662,8 @@
                     ${TEAM_OPTIONS.map((team) => `<option value="${team}" ${team === (entry.team || 'townsfolk') ? 'selected' : ''}>${team.charAt(0).toUpperCase() + team.slice(1)}</option>`).join('')}
                   </select>
                 </div>
-              </div>
-            `}
+              `}
+            </div>
           </article>
         `;
       }).join('');
@@ -473,23 +676,33 @@
         }
 
         if (roleIsStandard(entry)) {
-          const roleId = typeof entry === 'string' ? entry : entry.id;
-          return { id: roleId };
+          return entry.id;
         }
 
-        const card = cards.querySelector(`[data-role-id="${CSS.escape(entry.id)}"]`);
-        const name = card.querySelector('[data-field="name"]').value.trim();
-        const ability = card.querySelector('[data-field="ability"]').value.trim();
-        const team = card.querySelector('[data-field="team"]').value;
-
-        return {
+        const payload = {
           id: entry.id,
-          name,
-          ability,
-          team,
-          image: `/script/${scriptId}/script.${entry.id}.png`,
+          name: entry.name,
+          ability: entry.ability,
+          team: entry.team || 'townsfolk',
         };
+        if (entry.image) {
+          payload.image = entry.image;
+        }
+        return payload;
       });
+    }
+
+    async function loadOfficialRoles() {
+      const response = await fetch('/api/official-roles');
+      const payload = await response.json().catch(() => []);
+      if (!response.ok || !Array.isArray(payload)) {
+        throw new Error('Unable to load official roles.');
+      }
+      officialRoles = payload
+        .filter((role) => role && typeof role === 'object' && role.id)
+        .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+      officialRoleMap = new Map(officialRoles.map((role) => [role.id, role]));
+      addOfficialButton.disabled = officialRoles.length === 0;
     }
 
     async function saveChanges() {
@@ -498,6 +711,7 @@
         return;
       }
 
+      syncEntriesFromDom();
       saveButton.disabled = true;
       setStatus('Saving updates to disk…');
 
@@ -526,6 +740,8 @@
         scriptSubtitle.textContent = 'Open this page at /script/<uuid>/ or with ?id=<uuid>.';
         cards.innerHTML = '<article class="panel empty">A script id is required to load the dashboard.</article>';
         saveButton.disabled = true;
+        addOfficialButton.disabled = true;
+        addHomebrewButton.disabled = true;
         return;
       }
 
@@ -536,26 +752,103 @@
       bannerImage.onerror = bannerFallback;
 
       try {
+        addOfficialButton.disabled = true;
+        addHomebrewButton.disabled = true;
+        let rolesWarning = '';
+        try {
+          await loadOfficialRoles();
+        } catch (error) {
+          officialRoles = [];
+          officialRoleMap = new Map();
+          rolesWarning = error.message || 'Official roles are unavailable.';
+        }
         const response = await fetch(`/api/script/${encodeURIComponent(scriptId)}`);
         const payload = await response.json().catch(() => null);
         if (!response.ok || !Array.isArray(payload)) {
           throw new Error((payload && payload.detail) || 'Unable to load script data.');
         }
 
-        scriptData = payload;
+        scriptData = payload.map(normalizeEntry);
         const meta = scriptData.find((entry) => entry && typeof entry === 'object' && entry.id === '_meta');
         scriptTitle.textContent = meta?.name || `Script ${scriptId}`;
         scriptSubtitle.textContent = 'Loaded from server storage.';
         renderCards();
-        setStatus('Script loaded successfully.');
+        addHomebrewButton.disabled = false;
+        addOfficialButton.disabled = officialRoles.length === 0;
+        setStatus(rolesWarning || 'Script loaded successfully.', rolesWarning ? 'error' : '');
       } catch (error) {
         scriptTitle.textContent = 'Unable to load script';
         scriptSubtitle.textContent = error.message || 'Unexpected error.';
         cards.innerHTML = `<article class="panel empty">${escapeHtml(error.message || 'Unable to load script.')}</article>`;
         saveButton.disabled = true;
+        addOfficialButton.disabled = true;
+        addHomebrewButton.disabled = true;
         setStatus(error.message || 'Unable to load script.', 'error');
       }
     }
+
+    cards.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) {
+        return;
+      }
+      const card = button.closest('.card');
+      if (!card) {
+        return;
+      }
+      syncEntriesFromDom();
+      const index = Number(card.dataset.index);
+      if (button.dataset.action === 'remove') {
+        scriptData.splice(index, 1);
+        renderCards();
+        setStatus('Entry removed locally. Save to persist the change.');
+      }
+    });
+
+    cards.addEventListener('change', (event) => {
+      const field = event.target.closest('[data-field]');
+      if (!field) {
+        return;
+      }
+      if (field.dataset.field === 'kind' || field.dataset.field === 'official-id') {
+        syncEntriesFromDom();
+        renderCards();
+        setStatus('Entry updated locally. Save to persist the change.');
+      }
+    });
+
+    addOfficialButton.addEventListener('click', () => {
+      syncEntriesFromDom();
+      const firstRole = officialRoles[0];
+      if (!firstRole) {
+        setStatus('Official roles are unavailable right now.', 'error');
+        return;
+      }
+      scriptData.push({
+        _kind: 'official',
+        id: firstRole.id,
+        name: firstRole.name,
+        team: firstRole.team,
+        ability: firstRole.ability,
+      });
+      renderCards();
+      setStatus('Official role added locally. Save to persist the change.');
+    });
+
+    addHomebrewButton.addEventListener('click', () => {
+      syncEntriesFromDom();
+      const usedIds = new Set(scriptData.map((entry) => entry?.id).filter(Boolean));
+      scriptData.push({
+        _kind: 'custom',
+        id: nextHomebrewId(usedIds),
+        name: '',
+        ability: '',
+        team: 'townsfolk',
+        image: '',
+      });
+      renderCards();
+      setStatus('Homebrew role added locally. Save to persist the change.');
+    });
 
     saveButton.addEventListener('click', saveChanges);
     loadScript();
