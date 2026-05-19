@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clocktower Editor Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #121214;
+      --panel: #191c22;
+      --panel-2: #22262f;
+      --panel-3: #2c3240;
+      --border: rgba(255,255,255,0.08);
+      --text: #f5f7fb;
+      --muted: #9da7b5;
+      --accent: #7c5cff;
+      --accent-2: #5eead4;
+      --warning: #f59e0b;
+      --success: #22c55e;
+      --danger: #fb7185;
+      --shadow: 0 24px 60px rgba(0,0,0,0.35);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(124,92,255,0.12), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(94,234,212,0.08), transparent 28%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(16px);
+      background: rgba(18,18,20,0.84);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 22px;
+    }
+
+    .topbar-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      display: grid;
+      gap: 4px;
+    }
+
+    .brand small {
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--accent-2);
+      font-weight: 700;
+      font-size: 11px;
+    }
+
+    .brand strong { font-size: 1.1rem; }
+
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .toolbar input {
+      min-width: 220px;
+      height: 46px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      padding: 0 14px;
+      font-size: 0.95rem;
+    }
+
+    .toolbar button {
+      height: 46px;
+      border: 0;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--accent), #9588ff);
+      color: white;
+      padding: 0 18px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.2s ease;
+    }
+
+    .toolbar button:hover:not(:disabled) { transform: translateY(-1px); }
+    .toolbar button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .page {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px 22px 64px;
+      display: grid;
+      gap: 24px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(280px, 3fr) minmax(260px, 2fr);
+      gap: 24px;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .banner-panel {
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .banner-wrap {
+      border-radius: 20px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      min-height: 180px;
+      background: linear-gradient(135deg, rgba(124,92,255,0.18), rgba(94,234,212,0.08));
+      display: grid;
+      place-items: center;
+    }
+
+    .banner-wrap img {
+      width: 100%;
+      height: auto;
+      display: block;
+      object-fit: cover;
+    }
+
+    .script-heading {
+      display: grid;
+      gap: 6px;
+      padding: 0 6px 6px;
+    }
+
+    .script-heading h1 {
+      margin: 0;
+      font-size: clamp(1.8rem, 4vw, 2.8rem);
+    }
+
+    .script-heading p,
+    .meta-list p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .meta-panel {
+      padding: 22px;
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+
+    .meta-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .meta-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.92rem;
+      width: fit-content;
+    }
+
+    .status {
+      min-height: 24px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .status.success { color: var(--success); }
+    .status.error { color: var(--danger); }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 18px;
+    }
+
+    .card {
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .card-head {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+
+    .thumb {
+      width: 72px;
+      height: 72px;
+      border-radius: 18px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+    }
+
+    .thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .card-title {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .card-title h2 {
+      margin: 0;
+      font-size: 1.05rem;
+      overflow-wrap: anywhere;
+    }
+
+    .badge-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 28px;
+      padding: 0 12px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      color: var(--muted);
+    }
+
+    .badge.standard { color: var(--accent-2); }
+    .badge.custom { color: var(--warning); }
+
+    .field-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .field input,
+    .field textarea,
+    .field select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      padding: 12px 14px;
+      font: inherit;
+      resize: vertical;
+    }
+
+    .field textarea { min-height: 110px; }
+
+    .empty {
+      padding: 28px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 640px) {
+      .topbar { padding-inline: 14px; }
+      .page { padding-inline: 14px; }
+      .toolbar { width: 100%; }
+      .toolbar input,
+      .toolbar button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <small>Interactive editor</small>
+        <strong id="brandTitle">Clocktower Script Dashboard</strong>
+      </div>
+      <div class="toolbar">
+        <input id="editorInput" type="text" maxlength="80" placeholder="Editor nickname">
+        <button id="saveButton" type="button">Save Changes</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <article class="panel banner-panel">
+        <div class="banner-wrap">
+          <img id="bannerImage" alt="Script banner" loading="eager">
+        </div>
+        <div class="script-heading">
+          <h1 id="scriptTitle">Loading script…</h1>
+          <p id="scriptSubtitle">Fetching the stored script composition from disk.</p>
+        </div>
+      </article>
+
+      <aside class="panel meta-panel">
+        <div class="meta-list">
+          <div class="meta-chip">Script ID: <strong id="scriptIdLabel">—</strong></div>
+          <div class="meta-chip">Entries: <strong id="entryCountLabel">0</strong></div>
+          <div class="meta-chip">Storage: <strong>/app/storage/&lt;id&gt;/script.json</strong></div>
+        </div>
+        <p>Standard tokens are read-only references to official roles. Custom homebrew tokens can be edited inline and saved back to disk with an audit history entry.</p>
+        <div class="status" id="statusLine"></div>
+      </aside>
+    </section>
+
+    <section id="cards" class="cards"></section>
+  </main>
+
+  <script>
+    const TEAM_OPTIONS = ['townsfolk', 'outsider', 'minion', 'demon'];
+    const params = new URLSearchParams(window.location.search);
+    const scriptId = params.get('id');
+
+    const brandTitle = document.getElementById('brandTitle');
+    const scriptTitle = document.getElementById('scriptTitle');
+    const scriptSubtitle = document.getElementById('scriptSubtitle');
+    const scriptIdLabel = document.getElementById('scriptIdLabel');
+    const entryCountLabel = document.getElementById('entryCountLabel');
+    const bannerImage = document.getElementById('bannerImage');
+    const cards = document.getElementById('cards');
+    const saveButton = document.getElementById('saveButton');
+    const editorInput = document.getElementById('editorInput');
+    const statusLine = document.getElementById('statusLine');
+
+    let scriptData = [];
+
+    function setStatus(message = '', tone = '') {
+      statusLine.textContent = message;
+      statusLine.className = `status${tone ? ` ${tone}` : ''}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function roleIsStandard(role) {
+      return typeof role === 'string' || !role || !role.name;
+    }
+
+    function bannerFallback() {
+      bannerImage.alt = 'Script banner unavailable';
+      bannerImage.style.display = 'none';
+      bannerImage.parentElement.innerHTML = '<div style="padding:32px;text-align:center;color:#9da7b5;">Banner unavailable</div>';
+    }
+
+    function renderCards() {
+      const entries = scriptData.filter((entry) => !(entry && typeof entry === 'object' && entry.id === '_meta'));
+      entryCountLabel.textContent = String(entries.length);
+
+      if (!entries.length) {
+        cards.innerHTML = '<article class="panel empty">No token entries were found in this script.</article>';
+        return;
+      }
+
+      cards.innerHTML = entries.map((entry, index) => {
+        const standard = roleIsStandard(entry);
+        const roleId = typeof entry === 'string' ? entry : entry.id;
+        const displayName = standard ? roleId : (entry.name || roleId);
+        const thumb = standard
+          ? '<div class="thumb">🜁</div>'
+          : `<div class="thumb"><img src="/script/${encodeURIComponent(scriptId)}/script.${encodeURIComponent(roleId)}.png" alt="${escapeHtml(displayName)} thumbnail" onerror="this.closest('.thumb').innerHTML='🜂';"></div>`;
+
+        return `
+          <article class="panel card" data-index="${index}" data-role-id="${escapeHtml(roleId)}" data-standard="${standard}">
+            <div class="card-head">
+              ${thumb}
+              <div class="card-title">
+                <h2>${escapeHtml(displayName)}</h2>
+                <div class="badge-row">
+                  <span class="badge ${standard ? 'standard' : 'custom'}">${standard ? 'Standard Token' : 'Custom Token'}</span>
+                  <span class="badge">ID: ${escapeHtml(roleId)}</span>
+                </div>
+              </div>
+            </div>
+            ${standard ? `
+              <div class="field-grid">
+                <div class="field">
+                  <label>Role reference</label>
+                  <input type="text" value="${escapeHtml(roleId)}" disabled>
+                </div>
+              </div>
+            ` : `
+              <div class="field-grid">
+                <div class="field">
+                  <label for="name-${index}">Character Name</label>
+                  <input id="name-${index}" data-field="name" type="text" value="${escapeHtml(entry.name || '')}">
+                </div>
+                <div class="field">
+                  <label for="ability-${index}">Ability / Flavor Text</label>
+                  <textarea id="ability-${index}" data-field="ability">${escapeHtml(entry.ability || '')}</textarea>
+                </div>
+                <div class="field">
+                  <label for="team-${index}">Team Alignment</label>
+                  <select id="team-${index}" data-field="team">
+                    ${TEAM_OPTIONS.map((team) => `<option value="${team}" ${team === (entry.team || 'townsfolk') ? 'selected' : ''}>${team.charAt(0).toUpperCase() + team.slice(1)}</option>`).join('')}
+                  </select>
+                </div>
+              </div>
+            `}
+          </article>
+        `;
+      }).join('');
+    }
+
+    function collectPayload() {
+      return scriptData.map((entry) => {
+        if (entry && typeof entry === 'object' && entry.id === '_meta') {
+          return entry;
+        }
+
+        if (roleIsStandard(entry)) {
+          const roleId = typeof entry === 'string' ? entry : entry.id;
+          return { id: roleId };
+        }
+
+        const card = cards.querySelector(`[data-role-id="${CSS.escape(entry.id)}"]`);
+        const name = card.querySelector('[data-field="name"]').value.trim();
+        const ability = card.querySelector('[data-field="ability"]').value.trim();
+        const team = card.querySelector('[data-field="team"]').value;
+
+        return {
+          id: entry.id,
+          name,
+          ability,
+          team,
+          image: `/script/${scriptId}/script.${entry.id}.png`,
+        };
+      });
+    }
+
+    async function saveChanges() {
+      if (!scriptId) {
+        setStatus('Missing script id.', 'error');
+        return;
+      }
+
+      saveButton.disabled = true;
+      setStatus('Saving updates to disk…');
+
+      try {
+        const nickname = editorInput.value.trim() || 'anonymous';
+        const response = await fetch(`/api/script/${encodeURIComponent(scriptId)}/update?edited_by=${encodeURIComponent(nickname)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(collectPayload()),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || 'Save failed.');
+        }
+        setStatus(payload.message || 'Changes saved.', 'success');
+      } catch (error) {
+        setStatus(error.message || 'Save failed.', 'error');
+      } finally {
+        saveButton.disabled = false;
+      }
+    }
+
+    async function loadScript() {
+      if (!scriptId) {
+        scriptTitle.textContent = 'Missing script id';
+        scriptSubtitle.textContent = 'Open this page with ?id=<uuid>.';
+        cards.innerHTML = '<article class="panel empty">A script id is required to load the dashboard.</article>';
+        saveButton.disabled = true;
+        return;
+      }
+
+      scriptIdLabel.textContent = scriptId;
+      brandTitle.textContent = `Editing ${scriptId}`;
+      bannerImage.src = `/script/${encodeURIComponent(scriptId)}/scriptlogo.png`;
+      bannerImage.onerror = bannerFallback;
+
+      try {
+        const response = await fetch(`/api/script/${encodeURIComponent(scriptId)}`);
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !Array.isArray(payload)) {
+          throw new Error((payload && payload.detail) || 'Unable to load script data.');
+        }
+
+        scriptData = payload;
+        const meta = scriptData.find((entry) => entry && typeof entry === 'object' && entry.id === '_meta');
+        scriptTitle.textContent = meta?.name || `Script ${scriptId}`;
+        scriptSubtitle.textContent = `Loaded from /app/storage/${scriptId}/script.json`;
+        renderCards();
+        setStatus('Script loaded successfully.');
+      } catch (error) {
+        scriptTitle.textContent = 'Unable to load script';
+        scriptSubtitle.textContent = error.message || 'Unexpected error.';
+        cards.innerHTML = `<article class="panel empty">${escapeHtml(error.message || 'Unable to load script.')}</article>`;
+        saveButton.disabled = true;
+        setStatus(error.message || 'Unable to load script.', 'error');
+      }
+    }
+
+    saveButton.addEventListener('click', saveChanges);
+    loadScript();
+  </script>
+</body>
+</html>

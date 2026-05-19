@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clocktower Script Uploader</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #121214;
+      --panel: #181a1f;
+      --panel-2: #20232a;
+      --border: rgba(255,255,255,0.08);
+      --text: #f5f7fb;
+      --muted: #9ca3af;
+      --accent: #7c5cff;
+      --accent-2: #5eead4;
+      --danger: #fb7185;
+      --shadow: 0 25px 60px rgba(0,0,0,0.35);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(124,92,255,0.15), transparent 30%),
+        radial-gradient(circle at bottom right, rgba(94,234,212,0.08), transparent 25%),
+        var(--bg);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .shell {
+      width: min(920px, 100%);
+      display: grid;
+      gap: 28px;
+    }
+
+    .hero {
+      text-align: center;
+      display: grid;
+      gap: 12px;
+    }
+
+    .eyebrow {
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+      color: var(--accent-2);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 3.8rem);
+      line-height: 1;
+    }
+
+    .subtitle {
+      margin: 0 auto;
+      max-width: 640px;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.7;
+    }
+
+    .dropzone {
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      padding: 40px;
+      display: grid;
+      gap: 24px;
+    }
+
+    .drop-target {
+      border: 1.5px dashed rgba(124,92,255,0.45);
+      border-radius: 24px;
+      background: rgba(124,92,255,0.06);
+      padding: 48px 28px;
+      text-align: center;
+      transition: 0.2s ease;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .drop-target.active {
+      transform: translateY(-1px);
+      border-color: var(--accent-2);
+      background: rgba(94,234,212,0.09);
+      box-shadow: 0 0 0 1px rgba(94,234,212,0.15) inset;
+    }
+
+    .drop-target input { display: none; }
+
+    .drop-icon {
+      width: 78px;
+      height: 78px;
+      border-radius: 22px;
+      margin: 0 auto 18px;
+      display: grid;
+      place-items: center;
+      background: rgba(255,255,255,0.06);
+      font-size: 34px;
+    }
+
+    .drop-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .drop-copy {
+      color: var(--muted);
+      line-height: 1.6;
+      margin: 0 auto;
+      max-width: 520px;
+    }
+
+    .meta-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .file-pill {
+      min-height: 48px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 14px 22px;
+      font-size: 0.97rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.2s ease;
+    }
+
+    .primary {
+      background: linear-gradient(135deg, var(--accent), #9b8bff);
+      color: white;
+    }
+
+    .secondary {
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    button:hover:not(:disabled) { transform: translateY(-1px); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .status {
+      min-height: 24px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .status.error { color: var(--danger); }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      background: rgba(18,18,20,0.82);
+      backdrop-filter: blur(8px);
+      z-index: 20;
+    }
+
+    .overlay.visible { display: grid; }
+
+    .loader {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 28px 32px;
+      width: min(420px, calc(100vw - 40px));
+      box-shadow: var(--shadow);
+      text-align: center;
+    }
+
+    .spinner {
+      width: 42px;
+      height: 42px;
+      margin: 0 auto 18px;
+      border-radius: 50%;
+      border: 3px solid rgba(255,255,255,0.12);
+      border-top-color: var(--accent-2);
+      animation: spin 0.9s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 640px) {
+      .dropzone { padding: 24px; }
+      .drop-target { padding: 32px 20px; }
+      .actions { justify-content: stretch; }
+      .actions button { flex: 1 1 auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="eyebrow">Mono-Docker Dashboard</div>
+      <h1>Upload a Clocktower Script</h1>
+      <p class="subtitle">Drop a script image to extract the composition, persist static assets on disk, and continue directly into the live editor dashboard.</p>
+    </section>
+
+    <section class="dropzone">
+      <label class="drop-target" id="dropTarget">
+        <input id="fileInput" type="file" accept="image/*">
+        <div class="drop-icon">⬆</div>
+        <div class="drop-title">Drag &amp; drop a script image here</div>
+        <p class="drop-copy">PNG, JPG, or WEBP images are supported. Click anywhere in this panel to browse your local files.</p>
+      </label>
+
+      <div class="meta-row">
+        <div class="file-pill" id="filePill">No file selected</div>
+        <div class="actions">
+          <button class="secondary" id="clearButton" type="button">Clear</button>
+          <button class="primary" id="uploadButton" type="button" disabled>Process &amp; Open Dashboard</button>
+        </div>
+      </div>
+
+      <div class="status" id="statusLine"></div>
+    </section>
+  </div>
+
+  <div class="overlay" id="loadingOverlay" aria-hidden="true">
+    <div class="loader">
+      <div class="spinner"></div>
+      <h2>Processing your script</h2>
+      <p>This may take a few moments while the image is analyzed and the dashboard assets are prepared.</p>
+    </div>
+  </div>
+
+  <script>
+    const dropTarget = document.getElementById('dropTarget');
+    const fileInput = document.getElementById('fileInput');
+    const filePill = document.getElementById('filePill');
+    const uploadButton = document.getElementById('uploadButton');
+    const clearButton = document.getElementById('clearButton');
+    const statusLine = document.getElementById('statusLine');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+
+    let selectedFile = null;
+
+    function setStatus(message = '', isError = false) {
+      statusLine.textContent = message;
+      statusLine.classList.toggle('error', isError);
+    }
+
+    function setFile(file) {
+      selectedFile = file;
+      uploadButton.disabled = !file;
+      filePill.textContent = file ? `${file.name} • ${(file.size / 1024 / 1024).toFixed(2)} MB` : 'No file selected';
+      setStatus(file ? 'Ready to upload.' : '');
+    }
+
+    function showOverlay(show) {
+      loadingOverlay.classList.toggle('visible', show);
+      loadingOverlay.setAttribute('aria-hidden', String(!show));
+    }
+
+    async function uploadSelectedFile() {
+      if (!selectedFile) {
+        setStatus('Choose a script image before uploading.', true);
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('image', selectedFile, selectedFile.name);
+
+      setStatus('Uploading image...');
+      showOverlay(true);
+      uploadButton.disabled = true;
+
+      try {
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || 'Upload failed.');
+        }
+
+        if (!payload.uuid) {
+          throw new Error('The backend did not return a script identifier.');
+        }
+
+        window.location.href = `/dashboard/edit.html?id=${encodeURIComponent(payload.uuid)}`;
+      } catch (error) {
+        showOverlay(false);
+        uploadButton.disabled = false;
+        setStatus(error.message || 'Upload failed.', true);
+      }
+    }
+
+    ['dragenter', 'dragover'].forEach((eventName) => {
+      dropTarget.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropTarget.classList.add('active');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach((eventName) => {
+      dropTarget.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        if (eventName === 'drop') {
+          const [file] = event.dataTransfer.files;
+          if (file) {
+            setFile(file);
+          }
+        }
+        dropTarget.classList.remove('active');
+      });
+    });
+
+    fileInput.addEventListener('change', () => {
+      const [file] = fileInput.files;
+      if (file) {
+        setFile(file);
+      }
+    });
+
+    clearButton.addEventListener('click', () => {
+      fileInput.value = '';
+      setFile(null);
+    });
+
+    uploadButton.addEventListener('click', uploadSelectedFile);
+  </script>
+</body>
+</html>
