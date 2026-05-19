@@ -1,15 +1,12 @@
 # clocktower-img2json
 
-Converts Blood on the Clocktower script images into script JSON compatible with the app schema.
+Converts Blood on the Clocktower script images into script JSON and serves a web dashboard for editing the extracted result.
 
-## Features
-- Accepts uploaded or local script image files
-- OCR extraction of script title, author, role names, and ability text
-- Official roles are emitted as role ID strings
-- Homebrew roles are emitted as full objects and get icon cutouts from the uploaded image
-- Every request gets a UUID and output is stored in `storage/<uuid>/`
-- Homebrew icon URLs are UUID-scoped (`/assets/<uuid>/images/<role-id>.png`)
-- Output is validated against `script-schema.json` from The Pandemonium Institute repo
+## Architecture
+
+- `/app/data` stores audit metadata only in SQLite at `/app/data/metadata.db`
+- `/app/storage` stores filesystem assets only: `script.json`, `scriptlogo.png`, and cropped token images
+- The filesystem copy of `script.json` is the source of truth for script arrays
 
 ## Install
 
@@ -19,35 +16,24 @@ python -m pip install -e .[dev]
 
 > `pytesseract` requires the system `tesseract` binary to be installed.
 
-## CLI usage
-
-```bash
-clocktower-img2json \
-  --image-file "/absolute/path/to/script.png" \
-  --output-dir "/absolute/path/to/storage" \
-  --base-url "http://localhost:8000"
-```
-
-## API usage
-
-Run the API:
+## Run the API
 
 ```bash
 uvicorn clocktower_img2json.api:app --host 0.0.0.0 --port 8000
 ```
 
-Convert image:
+Or from the Docker-oriented wrapper:
 
 ```bash
-curl -X POST http://localhost:8000/scripts/from-upload \
-  -F "image=@/absolute/path/to/script.png" \
-  -F "script_name=Optional Script Name" \
-  -F "author=Optional Author"
+uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-Response includes:
-- `uuid`
-- `json_url` (direct link to generated JSON)
-- `source_image_url`
-- `homebrew_images` map with direct image URLs
-- generated `script`
+## Core routes
+
+- `GET /` — upload dashboard
+- `GET /dashboard/edit.html?id=<uuid>` — editor dashboard
+- `POST /api/upload` — ingest an image, write `/app/storage/<uuid>/script.json`, and create an audit record
+- `GET /api/script/<uuid>` — read `script.json` directly from disk and return JSON
+- `POST /api/script/<uuid>/update?edited_by=<name>` — overwrite `script.json` and append an edit history row
+- `GET /script/<uuid>/scriptlogo.png` — script banner asset
+- `GET /script/<uuid>/<asset_name>` — cropped icon assets

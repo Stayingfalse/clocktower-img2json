@@ -3,47 +3,131 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import cv2
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageDraw, ImageFont
 
 from .converter import convert_image_bytes_to_script
-from .data import get_official_roles
+from .data import get_official_roles, normalize_name
+from .database import DB_PATH, create_script_record, init_db, log_script_edit, script_record_exists
 from .ocv_processor import process_script_image
-from .startup import DB_PATH, init_db, refresh_official_roles
+from .startup import refresh_official_roles
+
+_SAFE_UUID_RE = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
+_SAFE_ASSET_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
+_LOGO_WIDTH = 600
+_LOGO_HEIGHT = 150
+_LOGO_BG = "#20252f"
+_LOGO_FG = "#f7f7fb"
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    init_db()
+    init_db(app.state.db_path)
     refresh_official_roles()
     yield
 
 
+
 def _slugify(text: str) -> str:
-    """Convert a role name to a filesystem-safe lowercase ASCII slug."""
     cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in text)
     cleaned = re.sub(r"-+", "-", cleaned).strip("-")
     return cleaned[:50]
 
 
-_SAFE_UUID_RE = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
-_SAFE_ASSET_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
+
+def _safe_uuid(uuid_str: str) -> str:
+    if not _SAFE_UUID_RE.match(uuid_str):
+        raise HTTPException(status_code=400, detail="Invalid identifier")
+    return os.path.basename(uuid_str)
 
 
-def create_app(storage_dir: str = "storage", db_path: Path | None = None) -> FastAPI:
+
+def _script_dir(storage_path: Path, uuid_str: str) -> Path:
+    safe_uid = _safe_uuid(uuid_str)
+    path = (storage_path / safe_uid).resolve()
+    if storage_path.resolve() not in path.parents:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    return path
+
+
+
+def _script_file(storage_path: Path, uuid_str: str, filename: str = "script.json") -> Path:
+    path = (_script_dir(storage_path, uuid_str) / filename).resolve()
+    if storage_path.resolve() not in path.parents:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    return path
+
+
+
+def _frontend_path(frontend_root: Path, relative_path: str) -> Path:
+    path = (frontend_root / relative_path).resolve()
+    if frontend_root.resolve() not in path.parents and path != frontend_root.resolve():
+        raise HTTPException(status_code=400, detail="Invalid frontend path")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Frontend file not found")
+    return path
+
+
+
+def _ensure_script_logo(script_name: str, output_dir: Path) -> None:
+    logo_path = output_dir / "scriptlogo.png"
+    if logo_path.exists():
+        return
+
+    img = Image.new("RGB", (_LOGO_WIDTH, _LOGO_HEIGHT), color=_LOGO_BG)
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", size=40)
+    except OSError:
+        font = ImageFont.load_default()
+
+    text = script_name or "Custom Script"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    draw.text(
+        ((_LOGO_WIDTH - text_w) // 2, (_LOGO_HEIGHT - text_h) // 2),
+        text,
+        fill=_LOGO_FG,
+        font=font,
+    )
+    img.save(logo_path)
+
+
+
+def create_app(
+    storage_dir: str = "storage",
+    db_path: Path | None = None,
+    frontend_dir: str | None = None,
+) -> FastAPI:
     app = FastAPI(title="clocktower-img2json", version="0.1.0", lifespan=_lifespan)
     storage_path = Path(storage_dir).resolve()
     storage_path.mkdir(parents=True, exist_ok=True)
-    _db_path: Path = db_path if db_path is not None else DB_PATH
+
+    app.state.storage_path = storage_path
+    app.state.db_path = db_path if db_path is not None else DB_PATH
+    app.state.frontend_path = (
+        Path(frontend_dir).resolve()
+        if frontend_dir is not None
+        else Path(__file__).resolve().parents[2] / "frontend"
+    )
 
     app.mount("/assets", StaticFiles(directory=str(storage_path)), name="assets")
+
+    @app.get("/", response_class=HTMLResponse)
+    def index_page():
+        return FileResponse(_frontend_path(app.state.frontend_path, "index.html"))
+
+    @app.get("/dashboard/edit.html", response_class=HTMLResponse)
+    def dashboard_page():
+        return FileResponse(_frontend_path(app.state.frontend_path, "edit.html"))
 
     @app.post("/scripts/from-upload")
     async def convert_upload(
@@ -92,13 +176,13 @@ def create_app(storage_dir: str = "storage", db_path: Path | None = None) -> Fas
     def health():
         return {"ok": True}
 
-    # ------------------------------------------------------------------
-    # POST /api/upload — ingest a script image
-    # ------------------------------------------------------------------
     @app.post("/api/upload")
-    async def upload_script(image: UploadFile = File(...)):
+    async def upload_script(
+        image: UploadFile = File(...),
+        creator: str | None = Form(default=None),
+    ):
         uid = uuid.uuid4().hex[:8]
-        upload_dir = storage_path / uid
+        upload_dir = _script_dir(storage_path, uid)
         upload_dir.mkdir(parents=True, exist_ok=True)
 
         image_bytes = await image.read()
@@ -110,72 +194,65 @@ def create_app(storage_dir: str = "storage", db_path: Path | None = None) -> Fas
         source_path.write_bytes(image_bytes)
 
         script_name, rows = process_script_image(str(source_path), str(upload_dir))
+        _ensure_script_logo(script_name, upload_dir)
 
-        official_roles = get_official_roles()
-        official_by_name: dict[str, str] = {
-            r.name.strip().lower(): r.id for r in official_roles
+        official_by_name = {
+            normalize_name(role.name): role.id
+            for role in get_official_roles()
+            if role.name and role.id
         }
 
-        script: list = [{"id": "_meta", "name": script_name}]
+        script: list[dict[str, object]] = [{"id": "_meta", "name": script_name or "Custom Script"}]
 
         for row in rows:
-            search_key = row["raw_name"].strip().lower()
+            raw_name = str(row.get("raw_name", "")).strip()
+            ability = str(row.get("ability", "")).strip()
+            search_key = normalize_name(raw_name)
             if search_key in official_by_name:
                 script.append({"id": official_by_name[search_key]})
-            else:
-                raw_name: str = row["raw_name"]
-                safe_id = _slugify(raw_name) or f"homebrew-{uid}"
-                icon_filename = f"script.{safe_id}.png"
-                icon_path = upload_dir / icon_filename
-                cv2.imwrite(str(icon_path), row["icon_crop"])
-                script.append(
-                    {
-                        "id": safe_id,
-                        "name": raw_name,
-                        "ability": row["ability"],
-                        "team": "townsfolk",
-                        "image": f"/script-assets/{uid}/{icon_filename}",
-                    }
-                )
+                continue
+
+            safe_id = _slugify(raw_name) or f"homebrew-{uid}"
+            icon_filename = f"script.{safe_id}.png"
+            icon_path = upload_dir / icon_filename
+            cv2.imwrite(str(icon_path), row["icon_crop"])
+            script.append(
+                {
+                    "id": safe_id,
+                    "name": raw_name or safe_id,
+                    "ability": ability,
+                    "team": "townsfolk",
+                    "image": f"/script/{uid}/{icon_filename}",
+                }
+            )
 
         script_json_path = upload_dir / "script.json"
         with script_json_path.open("w", encoding="utf-8") as f:
             json.dump(script, f, indent=2, ensure_ascii=False)
 
-        with sqlite3.connect(_db_path) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO scripts (uuid, name, custom_data) VALUES (?, ?, ?)",
-                (uid, script_name, json.dumps(script, ensure_ascii=False)),
-            )
-            conn.commit()
-
+        create_script_record(uid, creator=creator, db_path=app.state.db_path)
         return {"uuid": uid, "script": script}
 
-    # ------------------------------------------------------------------
-    # GET /api/script/{uuid_str} — fetch script from SQLite
-    # ------------------------------------------------------------------
     @app.get("/api/script/{uuid_str}")
     def get_script(uuid_str: str):
-        if not _SAFE_UUID_RE.match(uuid_str):
-            raise HTTPException(status_code=400, detail="Invalid identifier")
-        safe_uid = os.path.basename(uuid_str)
-        with sqlite3.connect(_db_path) as conn:
-            row = conn.execute(
-                "SELECT custom_data FROM scripts WHERE uuid = ?",
-                (safe_uid,),
-            ).fetchone()
-        if row is None:
+        script_path = _script_file(storage_path, uuid_str)
+        if not script_path.exists():
             raise HTTPException(status_code=404, detail="Script not found")
-        return JSONResponse(content=json.loads(row[0]))
+        with script_path.open("r", encoding="utf-8") as f:
+            return JSONResponse(content=json.load(f))
 
-    # ------------------------------------------------------------------
-    # POST /api/script/{uuid_str}/update — update script file + DB row
-    # ------------------------------------------------------------------
     @app.post("/api/script/{uuid_str}/update")
-    async def update_script(uuid_str: str, request: Request):
-        if not _SAFE_UUID_RE.match(uuid_str):
-            raise HTTPException(status_code=400, detail="Invalid identifier")
-        safe_uid = os.path.basename(uuid_str)
+    async def update_script(
+        uuid_str: str,
+        request: Request,
+        edited_by: str | None = None,
+    ):
+        safe_uid = _safe_uuid(uuid_str)
+        script_path = _script_file(storage_path, safe_uid)
+        if not script_path.exists():
+            raise HTTPException(status_code=404, detail="Script not found")
+        if not script_record_exists(safe_uid, db_path=app.state.db_path):
+            raise HTTPException(status_code=404, detail="Script metadata not found")
 
         try:
             updated_script = await request.json()
@@ -185,67 +262,41 @@ def create_app(storage_dir: str = "storage", db_path: Path | None = None) -> Fas
         if not isinstance(updated_script, list):
             raise HTTPException(status_code=400, detail="Request body must be a JSON array")
 
-        script_json_path = (storage_path / safe_uid / "script.json").resolve()
-        if storage_path.resolve() not in script_json_path.parents:
-            raise HTTPException(status_code=400, detail="Invalid path")
-
-        script_json_path.parent.mkdir(parents=True, exist_ok=True)
-        with script_json_path.open("w", encoding="utf-8") as f:
+        with script_path.open("w", encoding="utf-8") as f:
             json.dump(updated_script, f, indent=2, ensure_ascii=False)
 
-        with sqlite3.connect(_db_path) as conn:
-            conn.execute(
-                "UPDATE scripts SET custom_data = ? WHERE uuid = ?",
-                (json.dumps(updated_script, ensure_ascii=False), safe_uid),
-            )
-            conn.commit()
+        log_script_edit(
+            safe_uid,
+            edited_by=(edited_by or "anonymous").strip() or "anonymous",
+            change_summary=f"Updated script with {len(updated_script)} entries",
+            db_path=app.state.db_path,
+        )
+        return {
+            "status": "ok",
+            "message": "Script updated successfully",
+            "uuid": safe_uid,
+        }
 
-        return {"status": "ok", "uuid": safe_uid}
-
-    # ------------------------------------------------------------------
-    # GET /script/{uuid_str}/script.json
-    # ------------------------------------------------------------------
     @app.get("/script/{uuid_str}/script.json")
     def get_script_json_file(uuid_str: str):
-        if not _SAFE_UUID_RE.match(uuid_str):
-            raise HTTPException(status_code=400, detail="Invalid identifier")
-        safe_uid = os.path.basename(uuid_str)
-        path = (storage_path / safe_uid / "script.json").resolve()
-        if storage_path.resolve() not in path.parents:
-            raise HTTPException(status_code=400, detail="Invalid path")
+        path = _script_file(storage_path, uuid_str)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Script not found")
         return FileResponse(str(path), media_type="application/json")
 
-    # ------------------------------------------------------------------
-    # GET /script/{uuid_str}/scriptlogo.png
-    # ------------------------------------------------------------------
     @app.get("/script/{uuid_str}/scriptlogo.png")
     def get_script_logo(uuid_str: str):
-        if not _SAFE_UUID_RE.match(uuid_str):
-            raise HTTPException(status_code=400, detail="Invalid identifier")
-        safe_uid = os.path.basename(uuid_str)
-        path = (storage_path / safe_uid / "scriptlogo.png").resolve()
-        if storage_path.resolve() not in path.parents:
-            raise HTTPException(status_code=400, detail="Invalid path")
+        path = _script_file(storage_path, uuid_str, "scriptlogo.png")
         if not path.exists():
             raise HTTPException(status_code=404, detail="Logo not found")
         return FileResponse(str(path), media_type="image/png")
 
-    # ------------------------------------------------------------------
-    # GET /script/{uuid_str}/{asset_name}  — homebrew icon assets
-    # ------------------------------------------------------------------
     @app.get("/script/{uuid_str}/{asset_name}")
     def get_script_asset(uuid_str: str, asset_name: str):
-        if not _SAFE_UUID_RE.match(uuid_str):
-            raise HTTPException(status_code=400, detail="Invalid identifier")
         if not _SAFE_ASSET_RE.match(asset_name) or asset_name.startswith("."):
             raise HTTPException(status_code=400, detail="Invalid asset name")
-        safe_uid = os.path.basename(uuid_str)
         safe_name = os.path.basename(asset_name)
-        path = (storage_path / safe_uid / safe_name).resolve()
-        if storage_path.resolve() not in path.parents:
-            raise HTTPException(status_code=400, detail="Invalid path")
+        path = _script_file(storage_path, uuid_str, safe_name)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Asset not found")
         return FileResponse(str(path), media_type="image/png")

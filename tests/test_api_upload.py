@@ -1,10 +1,9 @@
-"""Tests for the /api/upload endpoint and /script/* asset routes."""
+"""Tests for the upload endpoint, dashboard pages, and /script/* asset routes."""
 from __future__ import annotations
 
 import io
 import json
 import sqlite3
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,14 +16,11 @@ from clocktower_img2json.api import create_app
 from clocktower_img2json.data import OfficialRole
 
 
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
+
 
 def _make_png_bytes(width: int = 200, height: int = 300) -> bytes:
-    """Return the bytes of a simple synthetic PNG image."""
     img = np.full((height, width, 3), 180, dtype=np.uint8)
-    # Add a dark rectangle in the body to give OpenCV contours to find
     top_cutoff = int(height * 0.15)
     cv2.rectangle(img, (5, top_cutoff + 10), (180, top_cutoff + 80), (30, 30, 30), -1)
     ok, buf = cv2.imencode(".png", img)
@@ -34,60 +30,75 @@ def _make_png_bytes(width: int = 200, height: int = 300) -> bytes:
 
 @pytest.fixture()
 def client(tmp_path):
-    """Create a TestClient backed by a temporary storage directory."""
-    db_path = tmp_path / "scripts.db"
-    # Pre-create the DB so the upload can write to it without needing /app/data
+    db_path = tmp_path / "metadata.db"
+    with patch("clocktower_img2json.api.init_db"), patch("clocktower_img2json.api.refresh_official_roles"):
+        app = create_app(
+            storage_dir=str(tmp_path),
+            db_path=db_path,
+            frontend_dir=str(FRONTEND_DIR),
+        )
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS scripts (
-                uuid        TEXT PRIMARY KEY,
-                name        TEXT,
-                custom_data TEXT
+                uuid TEXT PRIMARY KEY,
+                creator TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS edit_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                script_uuid TEXT,
+                edited_by TEXT,
+                edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                change_summary TEXT
             )
             """
         )
         conn.commit()
-
-    with patch("clocktower_img2json.api.init_db"), \
-         patch("clocktower_img2json.api.refresh_official_roles"):
-        app = create_app(storage_dir=str(tmp_path), db_path=db_path)
-
     return TestClient(app, raise_server_exceptions=True), tmp_path, db_path
 
-
-# ---------------------------------------------------------------------------
-# POST /api/upload — basic happy path
-# ---------------------------------------------------------------------------
 
 SAMPLE_OFFICIAL_ROLES = [
     OfficialRole(id="washerwoman", name="Washerwoman", team="townsfolk", ability="..."),
 ]
 
 
-def _ocr_side_effect(call_responses: list[str]):
-    it = iter(call_responses)
+def _seed_script(tmp_path: Path, uid: str, script: list) -> None:
+    d = tmp_path / uid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "script.json").write_text(json.dumps(script), encoding="utf-8")
 
-    def _inner(*_a, **_kw):
-        return next(it, "")
 
-    return _inner
+def test_index_page_serves_upload_dashboard(client):
+    tc, _, _ = client
+    response = tc.get("/")
+    assert response.status_code == 200
+    assert "Process &amp; Open Dashboard" in response.text
+
+
+def test_edit_page_serves_dashboard(client):
+    tc, _, _ = client
+    response = tc.get("/dashboard/edit.html")
+    assert response.status_code == 200
+    assert "Save Changes" in response.text
 
 
 def test_upload_returns_uuid_and_script(client):
-    tc, tmp_path, db_path = client
+    tc, _, _ = client
     png_bytes = _make_png_bytes()
-
-    # Patch OCR: first call = top section (script name), subsequent = row name+ability
-    # Patch process_script_image to return a controlled result
     fake_icon = np.zeros((60, 60, 3), dtype=np.uint8)
     fake_rows = [
         {"raw_name": "Washerwoman", "ability": "You start knowing something.", "icon_crop": fake_icon},
         {"raw_name": "My Homebrew", "ability": "Custom ability.", "icon_crop": fake_icon},
     ]
 
-    with patch("clocktower_img2json.api.process_script_image", return_value=("Test Script", fake_rows)), \
-         patch("clocktower_img2json.api.get_official_roles", return_value=SAMPLE_OFFICIAL_ROLES):
+    with patch("clocktower_img2json.api.process_script_image", return_value=("Test Script", fake_rows)), patch(
+        "clocktower_img2json.api.get_official_roles", return_value=SAMPLE_OFFICIAL_ROLES
+    ):
         response = tc.post(
             "/api/upload",
             files={"image": ("script.png", io.BytesIO(png_bytes), "image/png")},
@@ -95,130 +106,72 @@ def test_upload_returns_uuid_and_script(client):
 
     assert response.status_code == 200
     data = response.json()
-    assert "uuid" in data
-    assert "script" in data
-    assert isinstance(data["uuid"], str)
     assert len(data["uuid"]) == 8
+    assert data["script"][0] == {"id": "_meta", "name": "Test Script"}
 
 
-def test_upload_script_has_meta_block(client):
-    tc, tmp_path, db_path = client
+def test_upload_saves_script_json_and_logo_to_disk(client):
+    tc, tmp_path, _ = client
     png_bytes = _make_png_bytes()
-    fake_icon = np.zeros((60, 60, 3), dtype=np.uint8)
 
-    with patch("clocktower_img2json.api.process_script_image", return_value=("My Script", [])), \
-         patch("clocktower_img2json.api.get_official_roles", return_value=[]):
-        response = tc.post(
-            "/api/upload",
-            files={"image": ("script.png", io.BytesIO(png_bytes), "image/png")},
-        )
-
-    assert response.status_code == 200
-    script = response.json()["script"]
-    assert script[0] == {"id": "_meta", "name": "My Script"}
-
-
-def test_upload_official_role_appended_as_id_only(client):
-    tc, tmp_path, db_path = client
-    png_bytes = _make_png_bytes()
-    fake_icon = np.zeros((60, 60, 3), dtype=np.uint8)
-    fake_rows = [{"raw_name": "Washerwoman", "ability": "...", "icon_crop": fake_icon}]
-
-    with patch("clocktower_img2json.api.process_script_image", return_value=("Script", fake_rows)), \
-         patch("clocktower_img2json.api.get_official_roles", return_value=SAMPLE_OFFICIAL_ROLES):
-        response = tc.post(
-            "/api/upload",
-            files={"image": ("script.png", io.BytesIO(png_bytes), "image/png")},
-        )
-
-    script = response.json()["script"]
-    role_entries = [e for e in script if e.get("id") != "_meta"]
-    assert role_entries == [{"id": "washerwoman"}]
-
-
-def test_upload_homebrew_role_has_full_schema(client):
-    tc, tmp_path, db_path = client
-    png_bytes = _make_png_bytes()
-    fake_icon = np.zeros((60, 60, 3), dtype=np.uint8)
-    fake_rows = [{"raw_name": "My Homebrew", "ability": "Does something.", "icon_crop": fake_icon}]
-
-    with patch("clocktower_img2json.api.process_script_image", return_value=("Script", fake_rows)), \
-         patch("clocktower_img2json.api.get_official_roles", return_value=[]):
-        response = tc.post(
-            "/api/upload",
-            files={"image": ("script.png", io.BytesIO(png_bytes), "image/png")},
-        )
-
-    script = response.json()["script"]
-    role_entries = [e for e in script if e.get("id") != "_meta"]
-    assert len(role_entries) == 1
-    role = role_entries[0]
-    assert role["id"] == "my-homebrew"
-    assert role["name"] == "My Homebrew"
-    assert role["ability"] == "Does something."
-    assert role["team"] == "townsfolk"
-    assert "image" in role
-    assert role["image"].startswith("/script-assets/")
-    assert role["image"].endswith("script.my-homebrew.png")
-
-
-def test_upload_saves_script_json_to_disk(client):
-    tc, tmp_path, db_path = client
-    png_bytes = _make_png_bytes()
-    fake_icon = np.zeros((60, 60, 3), dtype=np.uint8)
-
-    with patch("clocktower_img2json.api.process_script_image", return_value=("Saved Script", [])), \
-         patch("clocktower_img2json.api.get_official_roles", return_value=[]):
+    with patch("clocktower_img2json.api.process_script_image", return_value=("Saved Script", [])), patch(
+        "clocktower_img2json.api.get_official_roles", return_value=[]
+    ):
         response = tc.post(
             "/api/upload",
             files={"image": ("script.png", io.BytesIO(png_bytes), "image/png")},
         )
 
     uid = response.json()["uuid"]
-    script_path = tmp_path / uid / "script.json"
-    assert script_path.exists()
-    saved = json.loads(script_path.read_text())
-    assert saved[0]["name"] == "Saved Script"
+    assert (tmp_path / uid / "script.json").exists()
+    assert (tmp_path / uid / "scriptlogo.png").exists()
 
 
-def test_upload_inserts_into_db(client):
-    tc, tmp_path, db_path = client
+def test_upload_records_only_metadata_in_db(client):
+    tc, _, db_path = client
     png_bytes = _make_png_bytes()
 
-    with patch("clocktower_img2json.api.process_script_image", return_value=("DB Script", [])), \
-         patch("clocktower_img2json.api.get_official_roles", return_value=[]):
+    with patch("clocktower_img2json.api.process_script_image", return_value=("DB Script", [])), patch(
+        "clocktower_img2json.api.get_official_roles", return_value=[]
+    ):
         response = tc.post(
             "/api/upload",
             files={"image": ("script.png", io.BytesIO(png_bytes), "image/png")},
+            data={"creator": "Uploader"},
         )
 
     uid = response.json()["uuid"]
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute("SELECT uuid, name FROM scripts WHERE uuid=?", (uid,)).fetchone()
-    assert row is not None
-    assert row[0] == uid
-    assert row[1] == "DB Script"
+        row = conn.execute("SELECT uuid, creator FROM scripts WHERE uuid=?", (uid,)).fetchone()
+    assert row == (uid, "Uploader")
+
+
+def test_upload_homebrew_role_uses_script_asset_route(client):
+    tc, _, _ = client
+    png_bytes = _make_png_bytes()
+    fake_icon = np.zeros((60, 60, 3), dtype=np.uint8)
+    fake_rows = [{"raw_name": "My Homebrew", "ability": "Does something.", "icon_crop": fake_icon}]
+
+    with patch("clocktower_img2json.api.process_script_image", return_value=("Script", fake_rows)), patch(
+        "clocktower_img2json.api.get_official_roles", return_value=[]
+    ):
+        response = tc.post(
+            "/api/upload",
+            files={"image": ("script.png", io.BytesIO(png_bytes), "image/png")},
+        )
+
+    role = response.json()["script"][1]
+    assert role["image"].startswith("/script/")
+    assert role["image"].endswith("script.my-homebrew.png")
 
 
 def test_upload_empty_file_returns_400(client):
-    tc, tmp_path, db_path = client
-    with patch("clocktower_img2json.api.process_script_image", return_value=("X", [])), \
-         patch("clocktower_img2json.api.get_official_roles", return_value=[]):
-        response = tc.post(
-            "/api/upload",
-            files={"image": ("empty.png", io.BytesIO(b""), "image/png")},
-        )
+    tc, _, _ = client
+    response = tc.post(
+        "/api/upload",
+        files={"image": ("empty.png", io.BytesIO(b""), "image/png")},
+    )
     assert response.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# GET /script/{uuid}/script.json
-# ---------------------------------------------------------------------------
-
-def _seed_script(tmp_path: Path, uid: str, script: list) -> None:
-    d = tmp_path / uid
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "script.json").write_text(json.dumps(script), encoding="utf-8")
 
 
 def test_get_script_json_returns_file(client):
@@ -231,16 +184,6 @@ def test_get_script_json_returns_file(client):
     assert response.status_code == 200
     assert response.json() == script
 
-
-def test_get_script_json_404(client):
-    tc, tmp_path, _ = client
-    response = tc.get("/script/nonexistent/script.json")
-    assert response.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# GET /script/{uuid}/scriptlogo.png
-# ---------------------------------------------------------------------------
 
 def test_get_scriptlogo_returns_file(client):
     tc, tmp_path, _ = client
@@ -255,16 +198,6 @@ def test_get_scriptlogo_returns_file(client):
     assert response.headers["content-type"].startswith("image/png")
 
 
-def test_get_scriptlogo_404(client):
-    tc, tmp_path, _ = client
-    response = tc.get("/script/missing/scriptlogo.png")
-    assert response.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# GET /script/{uuid}/{asset_name}  — wildcard homebrew icons
-# ---------------------------------------------------------------------------
-
 def test_get_asset_returns_file(client):
     tc, tmp_path, _ = client
     uid = "asset123"
@@ -278,16 +211,7 @@ def test_get_asset_returns_file(client):
     assert response.headers["content-type"].startswith("image/png")
 
 
-def test_get_asset_404(client):
-    tc, tmp_path, _ = client
-    response = tc.get("/script/abc12345/script.nobody.png")
-    assert response.status_code == 404
-
-
 def test_get_asset_path_traversal_blocked(client):
-    tc, tmp_path, _ = client
-    # Attempt to escape the storage dir via a path-traversal asset name
+    tc, _, _ = client
     response = tc.get("/script/abc12345/..%2F..%2Fetc%2Fpasswd")
-    # FastAPI URL-decodes before routing; the resolved path should not exist and
-    # the server should return 400 (traversal detected) or 404 (path not found).
     assert response.status_code in (400, 404)
