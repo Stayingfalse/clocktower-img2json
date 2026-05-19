@@ -94,6 +94,9 @@ def parse_script_lines(lines: list[OCRLine], official_by_name: dict[str, Officia
 
         is_header = _looks_like_role_name(line.text)
         official = official_by_name.get(normalize_name(line.text)) if is_header else None
+        if is_header and current_team is None and official is None:
+            i += 1
+            continue
         if is_header:
             ability_parts: list[str] = []
             j = i + 1

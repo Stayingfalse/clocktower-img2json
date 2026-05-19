@@ -1,3 +1,18 @@
+Metadata-Version: 2.4
+Name: clocktower-img2json
+Version: 0.1.0
+Summary: Convert Blood on the Clocktower script images to valid script JSON
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi==0.115.5
+Requires-Dist: uvicorn==0.32.1
+Requires-Dist: pillow==12.2.0
+Requires-Dist: pytesseract==0.3.13
+Requires-Dist: requests==2.32.3
+Requires-Dist: jsonschema==4.23.0
+Provides-Extra: dev
+Requires-Dist: pytest==8.3.3; extra == "dev"
+
 # clocktower-img2json
 
 Converts Blood on the Clocktower script images into script JSON compatible with the app schema.
@@ -23,21 +38,12 @@ python -m pip install -e .[dev]
 
 ```bash
 clocktower-img2json \
-  --image-url "https://example.com/script-image.png" \
+  --image-url "https://github.com/user-attachments/assets/15972d4a-8c17-4e9f-b008-37a6de4b2551" \
   --output-dir "/absolute/path/to/storage" \
   --base-url "http://localhost:8000"
 ```
 
 CLI prints UUID and generated file paths.
-
-Or use a local image file:
-
-```bash
-clocktower-img2json \
-  --image-file "/absolute/path/to/script.png" \
-  --output-dir "/absolute/path/to/storage" \
-  --base-url "http://localhost:8000"
-```
 
 ## API usage
 
@@ -52,16 +58,7 @@ Convert image:
 ```bash
 curl -X POST http://localhost:8000/scripts/from-image \
   -H 'content-type: application/json' \
-  -d '{"image_url":"https://example.com/script-image.png"}'
-```
-
-Convert an uploaded image file:
-
-```bash
-curl -X POST http://localhost:8000/scripts/from-upload \
-  -F "image=@/absolute/path/to/script.png" \
-  -F "script_name=Optional Script Name" \
-  -F "author=Optional Author"
+  -d '{"image_url":"https://github.com/user-attachments/assets/15972d4a-8c17-4e9f-b008-37a6de4b2551"}'
 ```
 
 Response includes:

@@ -1,0 +1,2 @@
+[console_scripts]
+clocktower-img2json = clocktower_img2json.cli:main

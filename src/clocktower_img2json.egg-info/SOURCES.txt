@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+src/clocktower_img2json/__init__.py
+src/clocktower_img2json/api.py
+src/clocktower_img2json/cli.py
+src/clocktower_img2json/converter.py
+src/clocktower_img2json/data.py
+src/clocktower_img2json/parser.py
+src/clocktower_img2json.egg-info/PKG-INFO
+src/clocktower_img2json.egg-info/SOURCES.txt
+src/clocktower_img2json.egg-info/dependency_links.txt
+src/clocktower_img2json.egg-info/entry_points.txt
+src/clocktower_img2json.egg-info/requires.txt
+src/clocktower_img2json.egg-info/top_level.txt
+tests/test_parser.py

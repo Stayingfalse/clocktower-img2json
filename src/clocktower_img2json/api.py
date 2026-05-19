@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl
 
-from .converter import convert_image_to_script
+from .converter import convert_image_bytes_to_script, convert_image_to_script
 
 
 class ConvertRequest(BaseModel):
@@ -33,6 +33,34 @@ def create_app(storage_dir: str = "storage") -> FastAPI:
             public_base_url=base_url,
             script_name_override=req.script_name,
             author_override=req.author,
+        )
+        return {
+            "uuid": result.request_id,
+            "json_url": f"{base_url}/scripts/{result.request_id}.json",
+            "source_image_url": f"{base_url}/assets/{result.request_id}/original.png",
+            "homebrew_images": result.image_urls,
+            "script": result.script,
+        }
+
+    @app.post("/scripts/from-upload")
+    async def convert_upload(
+        request: Request,
+        image: UploadFile = File(...),
+        script_name: str | None = Form(default=None),
+        author: str | None = Form(default=None),
+    ):
+        base_url = str(request.base_url).rstrip("/")
+        image_bytes = await image.read()
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded image is empty")
+
+        result = convert_image_bytes_to_script(
+            image_bytes=image_bytes,
+            storage_dir=storage_path,
+            public_base_url=base_url,
+            source_name=image.filename or "upload.png",
+            script_name_override=script_name,
+            author_override=author,
         )
         return {
             "uuid": result.request_id,
