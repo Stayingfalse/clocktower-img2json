@@ -78,6 +78,34 @@ def _frontend_path(frontend_root: Path, relative_path: str) -> Path:
 
 
 
+def _resolve_frontend_dir(frontend_dir: str | None) -> Path:
+    if frontend_dir is not None:
+        return Path(frontend_dir).resolve()
+
+    candidates: list[Path] = []
+
+    env_frontend = os.getenv("CLOCKTOWER_FRONTEND_DIR")
+    if env_frontend:
+        candidates.append(Path(env_frontend).resolve())
+
+    module_path = Path(__file__).resolve()
+    candidates.extend(
+        [
+            module_path.parents[2] / "frontend",  # source checkout layout
+            module_path.parents[1] / "frontend",  # package-included frontend layout
+            Path.cwd() / "frontend",  # runtime working directory layout
+            Path("/app/frontend"),  # container layout
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
+
 def _ensure_script_logo(script_name: str, output_dir: Path) -> None:
     logo_path = output_dir / "scriptlogo.png"
     if logo_path.exists():
@@ -115,11 +143,7 @@ def create_app(
 
     app.state.storage_path = storage_path
     app.state.db_path = db_path if db_path is not None else DB_PATH
-    app.state.frontend_path = (
-        Path(frontend_dir).resolve()
-        if frontend_dir is not None
-        else Path(__file__).resolve().parents[2] / "frontend"
-    )
+    app.state.frontend_path = _resolve_frontend_dir(frontend_dir)
 
     # Ensure frontend directory exists to prevent startup crashes
     if not app.state.frontend_path.exists():
