@@ -7,6 +7,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import jsonschema
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -261,13 +262,19 @@ def create_app(
         source_path = upload_dir / source_filename
         source_path.write_bytes(image_bytes)
 
-        result = convert_image_bytes_to_script(
-            image_bytes=image_bytes,
-            storage_dir=storage_path,
-            public_base_url=str(request.base_url).rstrip("/"),
-            source_name=source_filename,
-            request_id=uid,
-        )
+        try:
+            result = convert_image_bytes_to_script(
+                image_bytes=image_bytes,
+                storage_dir=storage_path,
+                public_base_url=str(request.base_url).rstrip("/"),
+                source_name=source_filename,
+                request_id=uid,
+            )
+        except jsonschema.ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"OCR produced a script that does not meet the minimum requirements: {exc.message}",
+            ) from exc
         script = _rewrite_dashboard_script_assets(result.script, upload_dir, uid)
         if not script or not (isinstance(script[0], dict) and script[0].get("id") == "_meta"):
             script.insert(0, {"id": "_meta", "name": "Custom Script"})
