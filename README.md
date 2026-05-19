@@ -18,8 +18,19 @@ python -m pip install -e .[dev]
 
 ### Optional DeepSeek OCR helper
 
-If `DEEPSEEK_API_KEY` is set, the converter will try DeepSeek OCR first.
+If `DEEPSEEK_API_KEY` is set, the converter will try DeepSeek first (using the configured model and the public image URL).
 If the key is missing, or the DeepSeek request fails, it automatically falls back to local `pytesseract` OCR.
+
+The following environment variables control DeepSeek behaviour:
+
+| Variable | Default | Description |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | _(unset)_ | Enable DeepSeek. If unset, local OCR is used. |
+| `DEEPSEEK_OCR_MODEL` | `deepseek-vl2` | Vision-capable DeepSeek model to use. |
+| `DEEPSEEK_API_URL` | `https://api.deepseek.com/chat/completions` | DeepSeek API endpoint. |
+| `PUBLIC_BASE_URL` | _(derived from request)_ | Override the base URL used to build the public image URL passed to DeepSeek. Required when the service runs behind a reverse proxy (e.g. `https://myscript.example.com`). |
+
+> **Note:** The model must support vision (image) inputs. `deepseek-chat` is text-only and will return a 400 error.
 
 ## Run the API
 

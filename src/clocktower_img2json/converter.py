@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -20,6 +19,18 @@ from .parser import OCRLine, crop_icon_for_role, parse_script_lines, save_icon, 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+_DEEPSEEK_PROMPT = (
+    "You are processing a Blood on the Clocktower custom script image."
+    " Identify every character/role visible and return ONLY a valid JSON array."
+    " The array should include:"
+    " (1) optionally a metadata object:"
+    ' {"id": "_meta", "name": "<script name>", "author": "<author if visible>"};'
+    " (2) role ID strings for official BotC characters (e.g. \"washerwoman\", \"butler\", \"imp\");"
+    " (3) homebrew role objects:"
+    ' {"id": "<lowercase-hyphen-id>", "name": "<Name>",'
+    ' "team": "<townsfolk|outsider|minion|demon|traveller|fabled>", "ability": "<ability text>"}.'
+    " Return only the JSON array, no explanation, no markdown fences."
+)
 
 
 @dataclass
@@ -78,6 +89,11 @@ def _extract_lines_local(image: Image.Image) -> list[OCRLine]:
     return sorted(lines.values(), key=lambda l: (l.y0, l.x0))
 
 
+def _extract_lines(image: Image.Image) -> list[OCRLine]:
+    """Extract OCR lines using local pytesseract."""
+    return _extract_lines_local(image)
+
+
 def _extract_json_payload(content: object) -> str:
     if isinstance(content, str):
         text = content.strip()
@@ -101,17 +117,60 @@ def _extract_json_payload(content: object) -> str:
     return text
 
 
-def _extract_lines_deepseek(image: Image.Image) -> list[OCRLine] | None:
+def _extract_embedded_json(image_bytes: bytes) -> list | None:
+    """Try to extract a script JSON array embedded in PNG metadata text chunks.
+
+    Blood on the Clocktower script tools (e.g. clocktower.online) often embed
+    the script JSON directly into the exported PNG as a tEXt/iTXt chunk.
+    """
+    try:
+        image = Image.open(BytesIO(image_bytes))
+        candidates: dict[str, str] = {}
+        info = getattr(image, "info", {}) or {}
+        candidates.update({k: v for k, v in info.items() if isinstance(v, str)})
+        text_attr = getattr(image, "text", {}) or {}
+        candidates.update({k: v for k, v in text_attr.items() if isinstance(v, str)})
+
+        for value in candidates.values():
+            value = value.strip()
+            if not (value.startswith("[") or value.startswith("{")):
+                continue
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    logger.debug("Found embedded JSON in PNG metadata (%d entries)", len(parsed))
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+    except Exception as exc:
+        logger.debug("Could not read embedded JSON from image: %s", exc)
+    return None
+
+
+def _extract_script_deepseek(image_url: str, embedded_hint: list | None = None) -> list | None:
+    """Call DeepSeek to extract a full script JSON array from the image URL.
+
+    Returns the parsed script list, or None if DeepSeek is not configured or
+    the call fails (errors are logged; exceptions are not propagated).
+    """
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         return None
 
-    model = os.getenv("DEEPSEEK_OCR_MODEL", "deepseek-chat")
+    model = os.getenv("DEEPSEEK_OCR_MODEL", "deepseek-vl2")
     endpoint = os.getenv("DEEPSEEK_API_URL", _DEEPSEEK_URL)
 
-    image_buffer = BytesIO()
-    image.save(image_buffer, format="PNG")
-    encoded_image = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+    prompt = _DEEPSEEK_PROMPT
+    if embedded_hint:
+        try:
+            hint_json = json.dumps(embedded_hint, ensure_ascii=False)
+            prompt = (
+                f"The image metadata contains this embedded JSON hint: {hint_json}"
+                f"\nUse it to help verify your extraction, but treat the image as the primary source."
+                f"\n\n{prompt}"
+            )
+        except Exception:
+            pass
 
     payload = {
         "model": model,
@@ -120,80 +179,60 @@ def _extract_lines_deepseek(image: Image.Image) -> list[OCRLine] | None:
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "Read this Blood on the Clocktower script image and return only valid JSON."
-                            " Output an array. Each entry must have text,x0,y0,x1,y1."
-                            " text is the exact OCR text for one full line."
-                            " Coordinates are pixel ints within the image."
-                        ),
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{encoded_image}"},
-                    },
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_url}},
                 ],
             }
         ],
     }
 
-    response = requests.post(
-        endpoint,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=45,
-    )
-    response.raise_for_status()
-    body = response.json()
-    choices = body.get("choices") or []
-    if not choices:
-        raise ValueError("No choices returned")
-    message = choices[0].get("message") if isinstance(choices[0], dict) else {}
-    content = message.get("content") if isinstance(message, dict) else None
-    text = _extract_json_payload(content)
-    raw_lines = json.loads(text)
-    if not isinstance(raw_lines, list):
-        raise ValueError("Model output must be a JSON list")
-
-    lines: list[OCRLine] = []
-    for raw_line in raw_lines:
-        if not isinstance(raw_line, dict):
-            continue
-        text_value = str(raw_line.get("text", "")).strip()
-        if not text_value:
-            continue
-        try:
-            x0 = int(raw_line.get("x0"))
-            y0 = int(raw_line.get("y0"))
-            x1 = int(raw_line.get("x1"))
-            y1 = int(raw_line.get("y1"))
-        except (TypeError, ValueError):
-            continue
-        lines.append(OCRLine(text=text_value, x0=x0, y0=y0, x1=x1, y1=y1))
-
-    if not lines:
-        raise ValueError("DeepSeek returned no valid OCR lines")
-    return sorted(lines, key=lambda l: (l.y0, l.x0))
-
-
-def _extract_lines(image: Image.Image) -> list[OCRLine]:
     try:
-        deepseek_lines = _extract_lines_deepseek(image)
-        if deepseek_lines:
-            return deepseek_lines
+        response = requests.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+        body = response.json()
+        choices = body.get("choices") or []
+        if not choices:
+            raise ValueError("No choices returned")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        content = message.get("content") if isinstance(message, dict) else None
+        text = _extract_json_payload(content)
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            raise ValueError("Model output must be a JSON array")
+        return parsed
     except Exception as exc:
         msg = str(exc)
         if "400" in msg or "Bad Request" in msg:
             logger.warning(
-                "DeepSeek OCR failed (400 Bad Request); falling back to local OCR."
+                "DeepSeek script extraction failed (400 Bad Request); falling back."
                 " The configured model may not support vision inputs."
                 " Set DEEPSEEK_OCR_MODEL to a vision-capable model (e.g. deepseek-vl2). Error: %s",
                 exc,
             )
         else:
-            logger.warning("DeepSeek OCR failed; falling back to local OCR: %s", exc)
-    return _extract_lines_local(image)
+            logger.warning("DeepSeek script extraction failed; falling back to local OCR: %s", exc)
+        return None
+
+
+def _apply_meta_overrides(script: list, name_override: str | None, author_override: str | None) -> None:
+    """Apply script name / author overrides to the _meta entry, inserting one if absent."""
+    if not (name_override or author_override):
+        return
+    if script and isinstance(script[0], dict) and script[0].get("id") == "_meta":
+        if name_override:
+            script[0]["name"] = name_override
+        if author_override:
+            script[0]["author"] = author_override
+    elif name_override:
+        meta: dict = {"id": "_meta", "name": name_override}
+        if author_override:
+            meta["author"] = author_override
+        script.insert(0, meta)
 
 
 def convert_image_bytes_to_script(
@@ -216,6 +255,54 @@ def convert_image_bytes_to_script(
     original_path = output_dir / "original.png"
     image.save(original_path, format="PNG")
 
+    schema = get_script_schema()
+
+    # --- 1. Check for embedded JSON in the original image bytes ---
+    embedded_json = _extract_embedded_json(image_bytes)
+    if embedded_json:
+        logger.info("Embedded JSON found in image metadata (%d entries)", len(embedded_json))
+
+    # --- 2. Try DeepSeek with the public image URL ---
+    # PUBLIC_BASE_URL overrides request.base_url for reverse-proxy deployments.
+    effective_base_url = os.getenv("PUBLIC_BASE_URL", public_base_url).rstrip("/")
+    image_url = f"{effective_base_url}/assets/{request_id}/original.png"
+
+    deepseek_script = _extract_script_deepseek(image_url, embedded_hint=embedded_json)
+    if deepseek_script is not None:
+        logger.info("DeepSeek extracted %d entries from script image", len(deepseek_script))
+        _apply_meta_overrides(deepseek_script, script_name_override, author_override)
+        jsonschema.validate(deepseek_script, schema)
+        script_path = output_dir / "script.json"
+        with script_path.open("w", encoding="utf-8") as f:
+            json.dump(deepseek_script, f, indent=2, ensure_ascii=False)
+        return ConversionResult(
+            request_id=request_id,
+            script=deepseek_script,
+            script_path=script_path,
+            image_path=original_path,
+            image_urls={},
+        )
+
+    # --- 3. Use embedded JSON directly if it passes schema validation ---
+    if embedded_json:
+        try:
+            jsonschema.validate(embedded_json, schema)
+            logger.info("Using embedded JSON as script directly")
+            _apply_meta_overrides(embedded_json, script_name_override, author_override)
+            script_path = output_dir / "script.json"
+            with script_path.open("w", encoding="utf-8") as f:
+                json.dump(embedded_json, f, indent=2, ensure_ascii=False)
+            return ConversionResult(
+                request_id=request_id,
+                script=embedded_json,
+                script_path=script_path,
+                image_path=original_path,
+                image_urls={},
+            )
+        except jsonschema.ValidationError:
+            logger.info("Embedded JSON failed schema validation; falling back to local OCR")
+
+    # --- 4. Fall back to local pytesseract OCR ---
     by_id, by_name = get_official_role_maps()
     lines = _extract_lines(image)
     script_name, author, roles = parse_script_lines(lines, by_name)
@@ -258,7 +345,6 @@ def convert_image_bytes_to_script(
 
         script.append(role_obj)
 
-    schema = get_script_schema()
     jsonschema.validate(script, schema)
 
     script_path = output_dir / "script.json"
