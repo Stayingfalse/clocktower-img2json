@@ -7,16 +7,13 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import cv2
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 
 from .converter import convert_image_bytes_to_script
-from .data import get_official_roles, normalize_name
 from .database import DB_PATH, create_script_record, init_db, log_script_edit, script_record_exists
-from .ocv_processor import process_script_image
 from .startup import refresh_official_roles
 
 _SAFE_UUID_RE = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
@@ -131,6 +128,36 @@ def _ensure_script_logo(script_name: str, output_dir: Path) -> None:
     img.save(logo_path)
 
 
+def _rewrite_dashboard_script_assets(script: list[object], script_dir: Path, uid: str) -> list[object]:
+    rewritten: list[object] = []
+    images_dir = script_dir / "images"
+
+    for entry in script:
+        if not isinstance(entry, dict):
+            rewritten.append(entry)
+            continue
+        if entry.get("id") == "_meta":
+            rewritten.append(entry)
+            continue
+
+        role_id = str(entry.get("id", "")).strip()
+        if not role_id:
+            rewritten.append(entry)
+            continue
+
+        icon_filename = f"script.{role_id}.png"
+        generated_icon = images_dir / f"{role_id}.png"
+        icon_path = script_dir / icon_filename
+        if generated_icon.exists() and not icon_path.exists():
+            generated_icon.replace(icon_path)
+
+        new_entry = dict(entry)
+        new_entry["image"] = f"/script/{uid}/{icon_filename}"
+        rewritten.append(new_entry)
+
+    return rewritten
+
+
 
 def create_app(
     storage_dir: str = "storage",
@@ -162,6 +189,11 @@ def create_app(
 
     @app.get("/dashboard/edit.html", response_class=HTMLResponse)
     def dashboard_page():
+        return FileResponse(_frontend_path(app.state.frontend_path, "edit.html"))
+
+    @app.get("/script/{uuid_str}/", response_class=HTMLResponse)
+    def pretty_dashboard_page(uuid_str: str):
+        _safe_uuid(uuid_str)
         return FileResponse(_frontend_path(app.state.frontend_path, "edit.html"))
 
     @app.post("/scripts/from-upload")
@@ -213,6 +245,7 @@ def create_app(
 
     @app.post("/api/upload")
     async def upload_script(
+        request: Request,
         image: UploadFile = File(...),
         creator: str | None = Form(default=None),
     ):
@@ -228,38 +261,18 @@ def create_app(
         source_path = upload_dir / source_filename
         source_path.write_bytes(image_bytes)
 
-        script_name, rows = process_script_image(str(source_path), str(upload_dir))
+        result = convert_image_bytes_to_script(
+            image_bytes=image_bytes,
+            storage_dir=storage_path,
+            public_base_url=str(request.base_url).rstrip("/"),
+            source_name=source_filename,
+            request_id=uid,
+        )
+        script = _rewrite_dashboard_script_assets(result.script, upload_dir, uid)
+        if not script or not (isinstance(script[0], dict) and script[0].get("id") == "_meta"):
+            script.insert(0, {"id": "_meta", "name": "Custom Script"})
+        script_name = str(script[0].get("name", "Custom Script")) if isinstance(script[0], dict) else "Custom Script"
         _ensure_script_logo(script_name, upload_dir)
-
-        official_by_name = {
-            normalize_name(role.name): role.id
-            for role in get_official_roles()
-            if role.name and role.id
-        }
-
-        script: list[dict[str, object]] = [{"id": "_meta", "name": script_name or "Custom Script"}]
-
-        for row in rows:
-            raw_name = str(row.get("raw_name", "")).strip()
-            ability = str(row.get("ability", "")).strip()
-            search_key = normalize_name(raw_name)
-            if search_key in official_by_name:
-                script.append({"id": official_by_name[search_key]})
-                continue
-
-            safe_id = _slugify(raw_name) or f"homebrew-{uid}"
-            icon_filename = f"script.{safe_id}.png"
-            icon_path = upload_dir / icon_filename
-            cv2.imwrite(str(icon_path), row["icon_crop"])
-            script.append(
-                {
-                    "id": safe_id,
-                    "name": raw_name or safe_id,
-                    "ability": ability,
-                    "team": "townsfolk",
-                    "image": f"/script/{uid}/{icon_filename}",
-                }
-            )
 
         script_json_path = upload_dir / "script.json"
         with script_json_path.open("w", encoding="utf-8") as f:

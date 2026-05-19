@@ -344,7 +344,7 @@
         </div>
         <div class="script-heading">
           <h1 id="scriptTitle">Loading script…</h1>
-          <p id="scriptSubtitle">Fetching the stored script composition from disk.</p>
+          <p id="scriptSubtitle">Fetching the stored script composition.</p>
         </div>
       </article>
 
@@ -352,7 +352,7 @@
         <div class="meta-list">
           <div class="meta-chip">Script ID: <strong id="scriptIdLabel">—</strong></div>
           <div class="meta-chip">Entries: <strong id="entryCountLabel">0</strong></div>
-          <div class="meta-chip">Storage: <strong>/app/storage/&lt;id&gt;/script.json</strong></div>
+          <a id="jsonLink" class="meta-chip" href="#" target="_blank" rel="noopener">Open script JSON</a>
         </div>
         <p>Standard tokens are read-only references to official roles. Custom homebrew tokens can be edited inline and saved back to disk with an audit history entry.</p>
         <div class="status" id="statusLine"></div>
@@ -365,7 +365,9 @@
   <script>
     const TEAM_OPTIONS = ['townsfolk', 'outsider', 'minion', 'demon'];
     const params = new URLSearchParams(window.location.search);
-    const scriptId = params.get('id');
+    const pathParts = window.location.pathname.split('/').filter(Boolean);
+    const pathScriptId = pathParts.length >= 2 && pathParts[0] === 'script' ? pathParts[1] : null;
+    const scriptId = params.get('id') || pathScriptId;
 
     const brandTitle = document.getElementById('brandTitle');
     const scriptTitle = document.getElementById('scriptTitle');
@@ -377,6 +379,7 @@
     const saveButton = document.getElementById('saveButton');
     const editorInput = document.getElementById('editorInput');
     const statusLine = document.getElementById('statusLine');
+    const jsonLink = document.getElementById('jsonLink');
 
     let scriptData = [];
 
@@ -520,7 +523,7 @@
     async function loadScript() {
       if (!scriptId) {
         scriptTitle.textContent = 'Missing script id';
-        scriptSubtitle.textContent = 'Open this page with ?id=<uuid>.';
+        scriptSubtitle.textContent = 'Open this page at /script/<uuid>/ or with ?id=<uuid>.';
         cards.innerHTML = '<article class="panel empty">A script id is required to load the dashboard.</article>';
         saveButton.disabled = true;
         return;
@@ -528,6 +531,7 @@
 
       scriptIdLabel.textContent = scriptId;
       brandTitle.textContent = `Editing ${scriptId}`;
+      jsonLink.href = `/script/${encodeURIComponent(scriptId)}/script.json`;
       bannerImage.src = `/script/${encodeURIComponent(scriptId)}/scriptlogo.png`;
       bannerImage.onerror = bannerFallback;
 
@@ -541,7 +545,7 @@
         scriptData = payload;
         const meta = scriptData.find((entry) => entry && typeof entry === 'object' && entry.id === '_meta');
         scriptTitle.textContent = meta?.name || `Script ${scriptId}`;
-        scriptSubtitle.textContent = `Loaded from /app/storage/${scriptId}/script.json`;
+        scriptSubtitle.textContent = 'Loaded from server storage.';
         renderCards();
         setStatus('Script loaded successfully.');
       } catch (error) {

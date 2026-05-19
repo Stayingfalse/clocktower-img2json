@@ -16,6 +16,11 @@ python -m pip install -e .[dev]
 
 > `pytesseract` requires the system `tesseract` binary to be installed.
 
+### Optional DeepSeek OCR helper
+
+If `DEEPSEEK_API_KEY` is set, the converter will try DeepSeek OCR first.
+If the key is missing, or the DeepSeek request fails, it automatically falls back to local `pytesseract` OCR.
+
 ## Run the API
 
 ```bash
@@ -48,7 +53,7 @@ docker run --rm -p 8000:8000 \
 ## Core routes
 
 - `GET /` — upload dashboard
-- `GET /dashboard/edit.html?id=<uuid>` — editor dashboard
+- `GET /script/<uuid>/` — editor dashboard
 - `POST /api/upload` — ingest an image, write `/app/storage/<uuid>/script.json`, and create an audit record
 - `GET /api/script/<uuid>` — read `script.json` directly from disk and return JSON
 - `POST /api/script/<uuid>/update?edited_by=<name>` — overwrite `script.json` and append an edit history row
