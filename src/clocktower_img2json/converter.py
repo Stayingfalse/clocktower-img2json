@@ -205,17 +205,35 @@ def _extract_script_deepseek(image_url: str, embedded_hint: list | None = None) 
         if not isinstance(parsed, list):
             raise ValueError("Model output must be a JSON array")
         return parsed
+    except requests.HTTPError as exc:
+        status_code = getattr(exc.response, "status_code", None)
+        request_body = None
+        response_body = None
+        if exc.response is not None:
+            request = getattr(exc.response, "request", None)
+            if request is not None:
+                request_body_raw = getattr(request, "body", None)
+                if isinstance(request_body_raw, bytes):
+                    request_body = request_body_raw.decode("utf-8", errors="replace")
+                elif request_body_raw is not None:
+                    request_body = str(request_body_raw)
+            response_body = getattr(exc.response, "text", None)
+        if request_body is None:
+            request_body = json.dumps(payload, ensure_ascii=False)
+        if response_body is None:
+            response_body = str(exc)
+
+        logger.warning(
+            "DeepSeek script extraction failed with HTTP %s; falling back to local OCR."
+            " Request body sent: %s"
+            " Response body received: %s",
+            status_code,
+            request_body,
+            response_body,
+        )
+        return None
     except Exception as exc:
-        msg = str(exc)
-        if "400" in msg or "Bad Request" in msg:
-            logger.warning(
-                "DeepSeek script extraction failed (400 Bad Request); falling back."
-                " The configured model may not support vision inputs."
-                " Set DEEPSEEK_OCR_MODEL to a vision-capable model (e.g. deepseek-vl2). Error: %s",
-                exc,
-            )
-        else:
-            logger.warning("DeepSeek script extraction failed; falling back to local OCR: %s", exc)
+        logger.warning("DeepSeek script extraction failed; falling back to local OCR: %s", exc)
         return None
 
 

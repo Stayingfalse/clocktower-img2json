@@ -146,8 +146,15 @@ def test_extract_script_deepseek_returns_none_and_logs_on_failure(caplog):
 def test_extract_script_deepseek_logs_vision_hint_on_400(caplog):
     import requests as req_module
 
+    mock_response = Mock()
+    mock_response.status_code = 400
+    mock_response.text = '{"error":{"message":"invalid image_url"}}'
+    mock_response.request = Mock(
+        body='{"model":"deepseek-vl2","messages":[{"role":"user","content":[{"type":"text","text":"prompt"},{"type":"image_url","image_url":{"url":"https://example.com/assets/abc/original.png"}}]}]}'
+    )
     http_error = req_module.exceptions.HTTPError(
-        "400 Client Error: Bad Request for url: https://api.deepseek.com/chat/completions"
+        "400 Client Error: Bad Request for url: https://api.deepseek.com/chat/completions",
+        response=mock_response,
     )
     with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
         "clocktower_img2json.converter.requests.post",
@@ -156,7 +163,9 @@ def test_extract_script_deepseek_logs_vision_hint_on_400(caplog):
         result = _extract_script_deepseek("https://example.com/assets/abc/original.png")
 
     assert result is None
-    assert any("vision" in record.message.lower() for record in caplog.records)
+    assert any("request body sent" in record.message.lower() for record in caplog.records)
+    assert any("response body received" in record.message.lower() for record in caplog.records)
+    assert any("invalid image_url" in record.message for record in caplog.records)
 
 
 # --- _extract_embedded_json ---
@@ -195,4 +204,3 @@ def test_extract_lines_falls_back_to_local_when_deepseek_fails():
 
     assert len(lines) == 1
     assert lines[0].text == "Washerwoman"
-
