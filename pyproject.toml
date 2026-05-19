@@ -16,6 +16,8 @@ dependencies = [
   "requests==2.32.3",
   "jsonschema==4.23.0",
   "python-multipart==0.0.27",
+  "opencv-python-headless==4.10.0.84",
+  "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
