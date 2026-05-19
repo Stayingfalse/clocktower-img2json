@@ -49,20 +49,22 @@ def _safe_uuid(uuid_str: str) -> str:
 
 
 
-def _script_dir(storage_path: Path, uuid_str: str) -> Path:
+def _existing_script_dir(storage_path: Path, uuid_str: str) -> Path:
     safe_uid = _safe_uuid(uuid_str)
-    path = (storage_path / safe_uid).resolve()
-    if storage_path.resolve() not in path.parents:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    return path
+    if not storage_path.exists():
+        raise HTTPException(status_code=404, detail="Script not found")
+    for child in storage_path.iterdir():
+        if child.is_dir() and child.name == safe_uid:
+            return child
+    raise HTTPException(status_code=404, detail="Script not found")
 
 
 
-def _script_file(storage_path: Path, uuid_str: str, filename: str = "script.json") -> Path:
-    path = (_script_dir(storage_path, uuid_str) / filename).resolve()
-    if storage_path.resolve() not in path.parents:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    return path
+def _existing_script_file(script_dir: Path, filename: str, not_found_detail: str) -> Path:
+    for child in script_dir.iterdir():
+        if child.is_file() and child.name == filename:
+            return child
+    raise HTTPException(status_code=404, detail=not_found_detail)
 
 
 
@@ -182,7 +184,7 @@ def create_app(
         creator: str | None = Form(default=None),
     ):
         uid = uuid.uuid4().hex[:8]
-        upload_dir = _script_dir(storage_path, uid)
+        upload_dir = storage_path / uid
         upload_dir.mkdir(parents=True, exist_ok=True)
 
         image_bytes = await image.read()
@@ -235,9 +237,8 @@ def create_app(
 
     @app.get("/api/script/{uuid_str}")
     def get_script(uuid_str: str):
-        script_path = _script_file(storage_path, uuid_str)
-        if not script_path.exists():
-            raise HTTPException(status_code=404, detail="Script not found")
+        script_dir = _existing_script_dir(storage_path, uuid_str)
+        script_path = _existing_script_file(script_dir, "script.json", "Script not found")
         with script_path.open("r", encoding="utf-8") as f:
             return JSONResponse(content=json.load(f))
 
@@ -248,9 +249,8 @@ def create_app(
         edited_by: str | None = None,
     ):
         safe_uid = _safe_uuid(uuid_str)
-        script_path = _script_file(storage_path, safe_uid)
-        if not script_path.exists():
-            raise HTTPException(status_code=404, detail="Script not found")
+        script_dir = _existing_script_dir(storage_path, safe_uid)
+        script_path = _existing_script_file(script_dir, "script.json", "Script not found")
         if not script_record_exists(safe_uid, db_path=app.state.db_path):
             raise HTTPException(status_code=404, detail="Script metadata not found")
 
@@ -279,16 +279,14 @@ def create_app(
 
     @app.get("/script/{uuid_str}/script.json")
     def get_script_json_file(uuid_str: str):
-        path = _script_file(storage_path, uuid_str)
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="Script not found")
+        script_dir = _existing_script_dir(storage_path, uuid_str)
+        path = _existing_script_file(script_dir, "script.json", "Script not found")
         return FileResponse(str(path), media_type="application/json")
 
     @app.get("/script/{uuid_str}/scriptlogo.png")
     def get_script_logo(uuid_str: str):
-        path = _script_file(storage_path, uuid_str, "scriptlogo.png")
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="Logo not found")
+        script_dir = _existing_script_dir(storage_path, uuid_str)
+        path = _existing_script_file(script_dir, "scriptlogo.png", "Logo not found")
         return FileResponse(str(path), media_type="image/png")
 
     @app.get("/script/{uuid_str}/{asset_name}")
@@ -296,9 +294,8 @@ def create_app(
         if not _SAFE_ASSET_RE.match(asset_name) or asset_name.startswith("."):
             raise HTTPException(status_code=400, detail="Invalid asset name")
         safe_name = os.path.basename(asset_name)
-        path = _script_file(storage_path, uuid_str, safe_name)
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="Asset not found")
+        script_dir = _existing_script_dir(storage_path, uuid_str)
+        path = _existing_script_file(script_dir, safe_name, "Asset not found")
         return FileResponse(str(path), media_type="image/png")
 
     return app
