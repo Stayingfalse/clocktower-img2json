@@ -16,6 +16,11 @@ python -m pip install -e .[dev]
 
 > `pytesseract` requires the system `tesseract` binary to be installed.
 
+### Optional DeepSeek OCR helper
+
+If `DEEPSEEK_API_KEY` is set, the converter will try DeepSeek OCR first.
+If the key is missing, or the DeepSeek request fails, it automatically falls back to local `pytesseract` OCR.
+
 ## Run the API
 
 ```bash
