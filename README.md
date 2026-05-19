@@ -19,6 +19,7 @@ python -m pip install -e .[dev]
 ### Optional Google AI Studio OCR helper
 
 If `GEMINI_API_KEY` is set, the converter will try Google AI Studio first using Gemini 3.5 Flash and the normalized PNG image bytes.
+Gemini is now asked for observed text plus icon bounding boxes, and the app still builds the final script locally so homebrew icon crops can be generated consistently.
 If the key is missing, or the Gemini request fails, it automatically falls back to local `pytesseract` OCR.
 
 The following environment variables control Gemini behaviour:
@@ -65,6 +66,7 @@ docker run --rm -p 8000:8000 \
 - `GET /` — upload dashboard
 - `GET /script/<uuid>/` — editor dashboard
 - `POST /api/upload` — ingest an image, write `/app/storage/<uuid>/script.json`, and create an audit record
+- `GET /api/official-roles` — return the official role catalog for editor CRUD controls
 - `GET /api/script/<uuid>` — read `script.json` directly from disk and return JSON
 - `POST /api/script/<uuid>/update?edited_by=<name>` — overwrite `script.json` and append an edit history row
 - `GET /script/<uuid>/scriptlogo.png` — script banner asset

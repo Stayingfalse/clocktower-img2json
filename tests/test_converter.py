@@ -13,8 +13,10 @@ from PIL.PngImagePlugin import PngInfo
 
 from clocktower_img2json.converter import (
     _extract_embedded_json,
+    _extract_gemini_observations,
     _extract_lines,
     _extract_script_gemini,
+    convert_image_bytes_to_script,
 )
 
 
@@ -80,7 +82,16 @@ def test_extract_script_gemini_returns_script_list():
         "candidates": [
             {
                 "content": {
-                    "parts": [{"text": '[{"id": "_meta", "name": "Test Script"}, "washerwoman"]'}]
+                    "parts": [
+                        {
+                            "text": (
+                                '{"script_name":"Test Script","author":null,"lines":['
+                                '{"text":"Washerwoman","x":10,"y":20,"width":120,"height":18,'
+                                '"icon_x":0,"icon_y":10,"icon_width":40,"icon_height":40}'
+                                ']}'
+                            )
+                        }
+                    ]
                 }
             }
         ]
@@ -94,13 +105,18 @@ def test_extract_script_gemini_returns_script_list():
     ):
         result = _extract_script_gemini(_png_bytes_with_json(["washerwoman"]))
 
-    assert result == [{"id": "_meta", "name": "Test Script"}, "washerwoman"]
+    assert result is not None
+    assert result.script_name == "Test Script"
+    assert result.lines[0].text == "Washerwoman"
+    assert result.lines[0].icon_bbox == (0, 10, 40, 50)
 
 
 def test_extract_script_gemini_uses_configured_model():
     """GEMINI_MODEL env var is used in the request URL."""
     mock_response = Mock()
-    mock_response.json.return_value = {"candidates": [{"content": {"parts": [{"text": '["washerwoman"]'}]}}]}
+    mock_response.json.return_value = {
+        "candidates": [{"content": {"parts": [{"text": '{"script_name":null,"author":null,"lines":[]}'}]}}]
+    }
     mock_response.raise_for_status.return_value = None
 
     with patch.dict(
@@ -120,7 +136,9 @@ def test_extract_script_gemini_uses_configured_model():
 
 def test_extract_script_gemini_includes_hint_in_prompt():
     mock_response = Mock()
-    mock_response.json.return_value = {"candidates": [{"content": {"parts": [{"text": '["washerwoman"]'}]}}]}
+    mock_response.json.return_value = {
+        "candidates": [{"content": {"parts": [{"text": '{"script_name":null,"author":null,"lines":[]}'}]}}]
+    }
     mock_response.raise_for_status.return_value = None
 
     hint = [{"id": "_meta", "name": "Hint Script"}]
@@ -143,6 +161,83 @@ def test_extract_script_gemini_returns_none_and_logs_on_failure(caplog):
 
     assert result is None
     assert caplog.records
+
+
+def test_extract_gemini_observations_returns_none_for_legacy_array_payload(caplog):
+    mock_response = Mock()
+    mock_response.json.return_value = {"candidates": [{"content": {"parts": [{"text": '["washerwoman"]'}]}}]}
+    mock_response.raise_for_status.return_value = None
+
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
+        "clocktower_img2json.converter.requests.post", return_value=mock_response
+    ), caplog.at_level(logging.WARNING, logger="clocktower_img2json.converter"):
+        result = _extract_gemini_observations(_png_bytes_with_json(["washerwoman"]))
+
+    assert result is None
+    assert any("falling back to local ocr" in record.message.lower() for record in caplog.records)
+
+
+def test_convert_image_bytes_to_script_uses_gemini_icon_bounds_for_homebrew(tmp_path):
+    image = Image.new("RGB", (220, 220), color="white")
+    for x in range(20, 60):
+        for y in range(40, 80):
+            image.putpixel((x, y), (255, 0, 0))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+
+    gemini_body = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": json.dumps(
+                                {
+                                    "script_name": "Gemini Script",
+                                    "author": "Tester",
+                                    "lines": [
+                                        {"text": "Townsfolk", "x": 90, "y": 10, "width": 90, "height": 20},
+                                        {
+                                            "text": "My Homebrew",
+                                            "x": 90,
+                                            "y": 50,
+                                            "width": 100,
+                                            "height": 20,
+                                            "icon_x": 20,
+                                            "icon_y": 40,
+                                            "icon_width": 40,
+                                            "icon_height": 40,
+                                        },
+                                        {"text": "Does a thing.", "x": 90, "y": 72, "width": 100, "height": 18},
+                                    ],
+                                }
+                            )
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    mock_response = Mock()
+    mock_response.json.return_value = gemini_body
+    mock_response.raise_for_status.return_value = None
+
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
+        "clocktower_img2json.converter.requests.post", return_value=mock_response
+    ), patch("clocktower_img2json.converter.get_script_schema", return_value={"type": "array"}), patch(
+        "clocktower_img2json.converter.get_official_role_maps", return_value=({}, {})
+    ):
+        result = convert_image_bytes_to_script(
+            image_bytes=buffer.getvalue(),
+            storage_dir=tmp_path,
+            public_base_url="http://example.test",
+            request_id="abc12345",
+        )
+
+    role = result.script[1]
+    assert role["id"] == "my-homebrew"
+    saved_icon = Image.open(tmp_path / "abc12345" / "images" / "my-homebrew.png")
+    assert saved_icon.size == (52, 52)
 
 
 def test_extract_script_gemini_logs_redacted_request_body_on_400(caplog):

@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 
 from .converter import convert_image_bytes_to_script
+from .data import get_official_roles
 from .database import DB_PATH, create_script_record, init_db, log_script_edit, script_record_exists
 from .startup import refresh_official_roles
 
@@ -243,6 +244,18 @@ def create_app(
     @app.get("/health")
     def health():
         return {"ok": True}
+
+    @app.get("/api/official-roles")
+    def official_roles():
+        return [
+            {
+                "id": role.id,
+                "name": role.name,
+                "team": role.team,
+                "ability": role.ability,
+            }
+            for role in get_official_roles()
+        ]
 
     @app.post("/api/upload")
     async def upload_script(

@@ -22,15 +22,14 @@ logger = logging.getLogger(__name__)
 _GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 _GEMINI_PROMPT = (
     "You are processing a Blood on the Clocktower custom script image."
-    " Identify every character/role visible and return ONLY a valid JSON array."
-    " The array should include:"
-    " (1) optionally a metadata object:"
-    ' {"id": "_meta", "name": "<script name>", "author": "<author if visible>"};'
-    " (2) role ID strings for official BotC characters (e.g. \"washerwoman\", \"butler\", \"imp\");"
-    " (3) homebrew role objects:"
-    ' {"id": "<lowercase-hyphen-id>", "name": "<Name>",'
-    ' "team": "<townsfolk|outsider|minion|demon|traveller|fabled>", "ability": "<ability text>"}.'
-    " Return only the JSON array, no explanation, no markdown fences."
+    " Read the visible text exactly as shown and return ONLY a valid JSON object"
+    ' with this shape: {"script_name": string|null, "author": string|null, "lines": [...]}'
+    ' where each line is {"text": string, "x": int, "y": int, "width": int, "height": int,'
+    ' "icon_x": int|null, "icon_y": int|null, "icon_width": int|null, "icon_height": int|null}.'
+    " Include every visible title, author, team header, role name, and ability line."
+    " Use image pixel coordinates for the top-left corner and dimensions."
+    " If a line belongs to a role row and the matching icon/token is visible, include that icon box."
+    " Return only the JSON object, no explanation, no markdown fences."
 )
 
 
@@ -41,6 +40,13 @@ class ConversionResult:
     script_path: Path
     image_path: Path
     image_urls: dict[str, str]
+
+
+@dataclass
+class GeminiObservation:
+    script_name: str | None
+    author: str | None
+    lines: list[OCRLine]
 
 
 def _ensure_dir(path: Path) -> None:
@@ -119,6 +125,57 @@ def _extract_json_payload(content: object) -> str:
     return text
 
 
+def _extract_bbox(payload: dict[str, object], prefix: str = "") -> tuple[int, int, int, int] | None:
+    try:
+        x = int(payload[f"{prefix}x"])
+        y = int(payload[f"{prefix}y"])
+        width = int(payload[f"{prefix}width"])
+        height = int(payload[f"{prefix}height"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return (x, y, x + width, y + height)
+
+
+def _parse_gemini_observations(payload: object) -> GeminiObservation:
+    if not isinstance(payload, dict):
+        raise ValueError("Model output must be a JSON object")
+
+    raw_lines = payload.get("lines")
+    if not isinstance(raw_lines, list):
+        raise ValueError("Model output must include a lines array")
+
+    lines: list[OCRLine] = []
+    for raw_line in raw_lines:
+        if not isinstance(raw_line, dict):
+            continue
+        text = str(raw_line.get("text", "")).strip()
+        if not text:
+            continue
+        bbox = _extract_bbox(raw_line)
+        if bbox is None:
+            continue
+        icon_bbox = _extract_bbox(raw_line, prefix="icon_")
+        lines.append(
+            OCRLine(
+                text=text,
+                x0=bbox[0],
+                y0=bbox[1],
+                x1=bbox[2],
+                y1=bbox[3],
+                icon_bbox=icon_bbox,
+            )
+        )
+
+    lines.sort(key=lambda line: (line.y0, line.x0))
+    return GeminiObservation(
+        script_name=str(payload.get("script_name")).strip() if payload.get("script_name") else None,
+        author=str(payload.get("author")).strip() if payload.get("author") else None,
+        lines=lines,
+    )
+
+
 def _extract_embedded_json(image_bytes: bytes) -> list | None:
     """Try to extract a script JSON array embedded in PNG metadata text chunks.
 
@@ -174,12 +231,8 @@ def _redact_request_body_for_log(request_body: str | None, fallback_payload: dic
     return json.dumps(_redact_gemini_payload(fallback_payload), ensure_ascii=False)
 
 
-def _extract_script_gemini(image_bytes: bytes, embedded_hint: list | None = None) -> list | None:
-    """Call Google AI Studio Gemini to extract a full script JSON array from the image.
-
-    Returns the parsed script list, or None if Gemini is not configured or
-    the call fails (errors are logged; exceptions are not propagated).
-    """
+def _extract_gemini_observations(image_bytes: bytes, embedded_hint: list | None = None) -> GeminiObservation | None:
+    """Call Gemini for observed text/icon boxes and convert the response into OCR lines."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return None
@@ -234,9 +287,7 @@ def _extract_script_gemini(image_bytes: bytes, embedded_hint: list | None = None
         parts = content.get("parts") if isinstance(content, dict) else None
         text = _extract_json_payload(parts)
         parsed = json.loads(text)
-        if not isinstance(parsed, list):
-            raise ValueError("Model output must be a JSON array")
-        return parsed
+        return _parse_gemini_observations(parsed)
     except requests.HTTPError as exc:
         status_code = getattr(exc.response, "status_code", None)
         request_body = None
@@ -255,7 +306,7 @@ def _extract_script_gemini(image_bytes: bytes, embedded_hint: list | None = None
             response_body = str(exc)
 
         logger.warning(
-            "Gemini script extraction failed with HTTP %s; falling back to local OCR."
+            "Gemini observation extraction failed with HTTP %s; falling back to local OCR."
             " Request body sent: %s"
             " Response body received: %s",
             status_code,
@@ -264,8 +315,12 @@ def _extract_script_gemini(image_bytes: bytes, embedded_hint: list | None = None
         )
         return None
     except Exception as exc:
-        logger.warning("Gemini script extraction failed; falling back to local OCR: %s", exc)
+        logger.warning("Gemini observation extraction failed; falling back to local OCR: %s", exc)
         return None
+
+
+def _extract_script_gemini(image_bytes: bytes, embedded_hint: list | None = None) -> GeminiObservation | None:
+    return _extract_gemini_observations(image_bytes, embedded_hint=embedded_hint)
 
 
 def _apply_meta_overrides(script: list, name_override: str | None, author_override: str | None) -> None:
@@ -282,6 +337,68 @@ def _apply_meta_overrides(script: list, name_override: str | None, author_overri
         if author_override:
             meta["author"] = author_override
         script.insert(0, meta)
+
+
+def _crop_icon(image: Image.Image, role_bbox: tuple[int, int, int, int], icon_bbox: tuple[int, int, int, int] | None) -> Image.Image:
+    if icon_bbox is None:
+        return crop_icon_for_role(image, role_bbox)
+
+    pad = 6
+    x0, y0, x1, y1 = icon_bbox
+    return image.crop(
+        (
+            max(0, x0 - pad),
+            max(0, y0 - pad),
+            min(image.width, x1 + pad),
+            min(image.height, y1 + pad),
+        )
+    )
+
+
+def _build_script_from_roles(
+    *,
+    image: Image.Image,
+    request_id: str,
+    public_base_url: str,
+    images_dir: Path,
+    script_name: str | None,
+    author: str | None,
+    roles: list,
+) -> tuple[list, dict[str, str]]:
+    script: list = []
+    if script_name:
+        meta = {"id": "_meta", "name": script_name}
+        if author:
+            meta["author"] = author
+        script.append(meta)
+
+    image_urls: dict[str, str] = {}
+
+    for role in roles:
+        if role.official:
+            script.append(role.official.id)
+            continue
+
+        role_id = slugify_role_id(role.name)
+        team = role.team or "townsfolk"
+        role_obj = {
+            "id": role_id,
+            "name": role.name,
+            "team": team,
+            "ability": role.ability or "",
+        }
+
+        if role.bbox:
+            icon = _crop_icon(image, role.bbox, role.icon_bbox)
+            icon_path = images_dir / f"{role_id}.png"
+            save_icon(icon, icon_path)
+            icon_url = f"{public_base_url.rstrip('/')}/assets/{request_id}/images/{role_id}.png"
+            role_obj["image"] = icon_url
+            image_urls[role_id] = icon_url
+
+        script.append(role_obj)
+
+    return script, image_urls
 
 
 def convert_image_bytes_to_script(
@@ -307,6 +424,7 @@ def convert_image_bytes_to_script(
     normalized_image_bytes = normalized_image_buffer.getvalue()
     original_path.write_bytes(normalized_image_bytes)
 
+    _, by_name = get_official_role_maps()
     schema = get_script_schema()
 
     # --- 1. Check for embedded JSON in the original image bytes ---
@@ -315,20 +433,38 @@ def convert_image_bytes_to_script(
         logger.info("Embedded JSON found in image metadata (%d entries)", len(embedded_json))
 
     # --- 2. Try Google AI Studio Gemini with the normalized image bytes ---
-    gemini_script = _extract_script_gemini(normalized_image_bytes, embedded_hint=embedded_json)
-    if gemini_script is not None:
-        logger.info("Gemini extracted %d entries from script image", len(gemini_script))
-        _apply_meta_overrides(gemini_script, script_name_override, author_override)
-        jsonschema.validate(gemini_script, schema)
+    gemini_observations = _extract_gemini_observations(normalized_image_bytes, embedded_hint=embedded_json)
+    if gemini_observations is not None and gemini_observations.lines:
+        logger.info("Gemini extracted %d observed lines from script image", len(gemini_observations.lines))
+        script_name, author, roles = parse_script_lines(gemini_observations.lines, by_name)
+        if gemini_observations.script_name:
+            script_name = gemini_observations.script_name
+        if gemini_observations.author:
+            author = gemini_observations.author
+        if script_name_override:
+            script_name = script_name_override
+        if author_override:
+            author = author_override
+
+        script, image_urls = _build_script_from_roles(
+            image=image,
+            request_id=request_id,
+            public_base_url=public_base_url,
+            images_dir=images_dir,
+            script_name=script_name,
+            author=author,
+            roles=roles,
+        )
+        jsonschema.validate(script, schema)
         script_path = output_dir / "script.json"
         with script_path.open("w", encoding="utf-8") as f:
-            json.dump(gemini_script, f, indent=2, ensure_ascii=False)
+            json.dump(script, f, indent=2, ensure_ascii=False)
         return ConversionResult(
             request_id=request_id,
-            script=gemini_script,
+            script=script,
             script_path=script_path,
             image_path=original_path,
-            image_urls={},
+            image_urls=image_urls,
         )
 
     # --- 3. Use embedded JSON directly if it passes schema validation ---
@@ -351,7 +487,6 @@ def convert_image_bytes_to_script(
             logger.info("Embedded JSON failed schema validation; falling back to local OCR")
 
     # --- 4. Fall back to local pytesseract OCR ---
-    by_id, by_name = get_official_role_maps()
     lines = _extract_lines(image)
     script_name, author, roles = parse_script_lines(lines, by_name)
 
@@ -360,38 +495,15 @@ def convert_image_bytes_to_script(
     if author_override:
         author = author_override
 
-    script: list = []
-    if script_name:
-        meta = {"id": "_meta", "name": script_name}
-        if author:
-            meta["author"] = author
-        script.append(meta)
-
-    image_urls: dict[str, str] = {}
-
-    for role in roles:
-        if role.official:
-            script.append(role.official.id)
-            continue
-
-        role_id = slugify_role_id(role.name)
-        team = role.team or "townsfolk"
-        role_obj = {
-            "id": role_id,
-            "name": role.name,
-            "team": team,
-            "ability": role.ability or "",
-        }
-
-        if role.bbox:
-            icon = crop_icon_for_role(image, role.bbox)
-            icon_path = images_dir / f"{role_id}.png"
-            save_icon(icon, icon_path)
-            icon_url = f"{public_base_url.rstrip('/')}/assets/{request_id}/images/{role_id}.png"
-            role_obj["image"] = icon_url
-            image_urls[role_id] = icon_url
-
-        script.append(role_obj)
+    script, image_urls = _build_script_from_roles(
+        image=image,
+        request_id=request_id,
+        public_base_url=public_base_url,
+        images_dir=images_dir,
+        script_name=script_name,
+        author=author,
+        roles=roles,
+    )
 
     jsonschema.validate(script, schema)
 

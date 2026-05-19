@@ -25,6 +25,7 @@ class OCRLine:
     y0: int
     x1: int
     y1: int
+    icon_bbox: tuple[int, int, int, int] | None = None
 
 
 @dataclass
@@ -33,6 +34,7 @@ class ParsedRole:
     team: str | None
     ability: str
     bbox: tuple[int, int, int, int] | None
+    icon_bbox: tuple[int, int, int, int] | None
     official: OfficialRole | None
 
 
@@ -63,7 +65,10 @@ def _looks_like_role_name(text: str) -> bool:
 
 
 def parse_script_lines(lines: list[OCRLine], official_by_name: dict[str, OfficialRole]) -> tuple[str | None, str | None, list[ParsedRole]]:
-    normalized = [OCRLine(_clean_line(line.text), line.x0, line.y0, line.x1, line.y1) for line in lines]
+    normalized = [
+        OCRLine(_clean_line(line.text), line.x0, line.y0, line.x1, line.y1, line.icon_bbox)
+        for line in lines
+    ]
     normalized = [line for line in normalized if line.text]
 
     script_name: str | None = None
@@ -118,6 +123,7 @@ def parse_script_lines(lines: list[OCRLine], official_by_name: dict[str, Officia
                     team=role_team,
                     ability=ability_text,
                     bbox=(line.x0, line.y0, line.x1, line.y1),
+                    icon_bbox=line.icon_bbox,
                     official=official,
                 )
             )

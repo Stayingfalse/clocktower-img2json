@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from clocktower_img2json.api import create_app
 from clocktower_img2json.converter import ConversionResult
+from clocktower_img2json.data import OfficialRole
 
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
@@ -90,6 +91,8 @@ def test_edit_page_serves_dashboard(client):
     tc, _, _ = client
     response = tc.get("/dashboard/edit.html")
     assert response.status_code == 200
+    assert "Add Official Role" in response.text
+    assert "Add Homebrew Role" in response.text
     assert "Save Changes" in response.text
 
 
@@ -98,6 +101,20 @@ def test_pretty_script_dashboard_route_serves_editor(client):
     response = tc.get("/script/abc12345/")
     assert response.status_code == 200
     assert "Save Changes" in response.text
+
+
+def test_official_roles_endpoint_returns_roles(client):
+    tc, _, _ = client
+    with patch(
+        "clocktower_img2json.api.get_official_roles",
+        return_value=[OfficialRole(id="washerwoman", name="Washerwoman", team="townsfolk", ability="Ability")],
+    ):
+        response = tc.get("/api/official-roles")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"id": "washerwoman", "name": "Washerwoman", "team": "townsfolk", "ability": "Ability"}
+    ]
 
 
 def test_upload_returns_uuid_and_script(client):
