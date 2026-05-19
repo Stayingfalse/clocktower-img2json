@@ -1,20 +1,14 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, HttpUrl
 
-from .converter import convert_image_bytes_to_script, convert_image_to_script
-
-
-class ConvertRequest(BaseModel):
-    image_url: HttpUrl
-    script_name: str | None = None
-    author: str | None = None
+from .converter import convert_image_bytes_to_script
 
 
 def create_app(storage_dir: str = "storage") -> FastAPI:
@@ -23,24 +17,6 @@ def create_app(storage_dir: str = "storage") -> FastAPI:
     storage_path.mkdir(parents=True, exist_ok=True)
 
     app.mount("/assets", StaticFiles(directory=str(storage_path)), name="assets")
-
-    @app.post("/scripts/from-image")
-    def convert(req: ConvertRequest, request: Request):
-        base_url = str(request.base_url).rstrip("/")
-        result = convert_image_to_script(
-            image_url=str(req.image_url),
-            storage_dir=storage_path,
-            public_base_url=base_url,
-            script_name_override=req.script_name,
-            author_override=req.author,
-        )
-        return {
-            "uuid": result.request_id,
-            "json_url": f"{base_url}/scripts/{result.request_id}.json",
-            "source_image_url": f"{base_url}/assets/{result.request_id}/original.png",
-            "homebrew_images": result.image_urls,
-            "script": result.script,
-        }
 
     @app.post("/scripts/from-upload")
     async def convert_upload(
@@ -72,7 +48,14 @@ def create_app(storage_dir: str = "storage") -> FastAPI:
 
     @app.get("/scripts/{request_id}.json")
     def get_script_json(request_id: str):
-        script_path = storage_path / request_id / "script.json"
+        try:
+            request_uuid = uuid.UUID(request_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid UUID") from exc
+
+        script_path = (storage_path / str(request_uuid) / "script.json").resolve()
+        if storage_path not in script_path.parents:
+            raise HTTPException(status_code=400, detail="Invalid path")
         if not script_path.exists():
             raise HTTPException(status_code=404, detail="Script not found")
         with script_path.open("r", encoding="utf-8") as f:

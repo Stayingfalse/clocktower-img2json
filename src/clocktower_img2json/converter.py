@@ -8,7 +8,6 @@ from pathlib import Path
 
 import jsonschema
 import pytesseract
-import requests
 from PIL import Image
 
 from .data import get_official_role_maps, get_script_schema
@@ -69,19 +68,6 @@ def _extract_lines(image: Image.Image) -> list[OCRLine]:
             )
 
     return sorted(lines.values(), key=lambda l: (l.y0, l.x0))
-
-
-def fetch_image_bytes(image_url: str) -> bytes:
-    response = requests.get(
-        image_url,
-        timeout=60,
-        headers={
-            "User-Agent": "clocktower-img2json/0.1.0",
-            "Accept": "image/*,*/*;q=0.8",
-        },
-    )
-    response.raise_for_status()
-    return response.content
 
 
 def convert_image_bytes_to_script(
@@ -158,22 +144,4 @@ def convert_image_bytes_to_script(
         script_path=script_path,
         image_path=original_path,
         image_urls=image_urls,
-    )
-
-
-def convert_image_to_script(
-    image_url: str,
-    storage_dir: Path,
-    public_base_url: str,
-    script_name_override: str | None = None,
-    author_override: str | None = None,
-) -> ConversionResult:
-    image_bytes = fetch_image_bytes(image_url)
-    return convert_image_bytes_to_script(
-        image_bytes=image_bytes,
-        storage_dir=storage_dir,
-        public_base_url=public_base_url,
-        source_name="original.png",
-        script_name_override=script_name_override,
-        author_override=author_override,
     )

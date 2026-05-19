@@ -3,7 +3,7 @@
 Converts Blood on the Clocktower script images into script JSON compatible with the app schema.
 
 ## Features
-- Downloads script image by URL
+- Accepts uploaded or local script image files
 - OCR extraction of script title, author, role names, and ability text
 - Official roles are emitted as role ID strings
 - Homebrew roles are emitted as full objects and get icon cutouts from the uploaded image
@@ -23,17 +23,6 @@ python -m pip install -e .[dev]
 
 ```bash
 clocktower-img2json \
-  --image-url "https://example.com/script-image.png" \
-  --output-dir "/absolute/path/to/storage" \
-  --base-url "http://localhost:8000"
-```
-
-CLI prints UUID and generated file paths.
-
-Or use a local image file:
-
-```bash
-clocktower-img2json \
   --image-file "/absolute/path/to/script.png" \
   --output-dir "/absolute/path/to/storage" \
   --base-url "http://localhost:8000"
@@ -48,14 +37,6 @@ uvicorn clocktower_img2json.api:app --host 0.0.0.0 --port 8000
 ```
 
 Convert image:
-
-```bash
-curl -X POST http://localhost:8000/scripts/from-image \
-  -H 'content-type: application/json' \
-  -d '{"image_url":"https://example.com/script-image.png"}'
-```
-
-Convert an uploaded image file:
 
 ```bash
 curl -X POST http://localhost:8000/scripts/from-upload \
