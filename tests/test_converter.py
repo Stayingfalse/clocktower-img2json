@@ -18,6 +18,7 @@ from clocktower_img2json.converter import (
     _extract_script_gemini,
     convert_image_bytes_to_script,
 )
+from clocktower_img2json.data import OfficialRole
 
 
 def _sample_tesseract_payload() -> dict:
@@ -335,6 +336,14 @@ def test_convert_image_bytes_to_script_prefers_richer_embedded_json_when_gemini_
     embedded_script = [
         {"id": "_meta", "name": "Embedded Script"},
         "washerwoman",
+        {
+            "id": "nightwatch",
+            "name": "Nightwatch",
+            "team": "townsfolk",
+            "ability": "Each night, choose a player: learn if they woke tonight.",
+            "firstNight": 20,
+            "otherNight": 45,
+        },
         "librarian",
         "investigator",
         "poisoner",
@@ -397,6 +406,8 @@ def test_convert_image_bytes_to_script_prefers_richer_embedded_json_when_gemini_
 
     assert result.script == embedded_script
     assert result.image_urls == {}
+    assert result.script[2]["firstNight"] == 20
+    assert result.script[2]["otherNight"] == 45
 
 
 # --- _extract_embedded_json ---
