@@ -27,6 +27,8 @@ _GEMINI_PROMPT = (
     ' where each line is {"text": string, "x": int, "y": int, "width": int, "height": int,'
     ' "icon_x": int|null, "icon_y": int|null, "icon_width": int|null, "icon_height": int|null}.'
     " Include every visible title, author, team header, role name, and ability line."
+    " The lines array must be exhaustive for the full script; do not return partial output."
+    " If multiple columns are present, include all columns from top to bottom."
     " Use image pixel coordinates for the top-left corner and dimensions."
     " If a line belongs to a role row and the matching icon/token is visible, include that icon box."
     " Return only the JSON object, no explanation, no markdown fences."
@@ -401,6 +403,15 @@ def _build_script_from_roles(
     return script, image_urls
 
 
+def _script_role_count(script: list) -> int:
+    count = 0
+    for entry in script:
+        if isinstance(entry, dict) and entry.get("id") == "_meta":
+            continue
+        count += 1
+    return count
+
+
 def convert_image_bytes_to_script(
     image_bytes: bytes,
     storage_dir: Path,
@@ -429,8 +440,14 @@ def convert_image_bytes_to_script(
 
     # --- 1. Check for embedded JSON in the original image bytes ---
     embedded_json = _extract_embedded_json(image_bytes)
+    validated_embedded_json: list | None = None
     if embedded_json:
         logger.info("Embedded JSON found in image metadata (%d entries)", len(embedded_json))
+        try:
+            jsonschema.validate(embedded_json, schema)
+            validated_embedded_json = embedded_json
+        except jsonschema.ValidationError:
+            logger.info("Embedded JSON failed schema validation; cannot use as direct fallback")
 
     # --- 2. Try Google AI Studio Gemini with the normalized image bytes ---
     gemini_observations = _extract_gemini_observations(normalized_image_bytes, embedded_hint=embedded_json)
@@ -455,36 +472,59 @@ def convert_image_bytes_to_script(
             author=author,
             roles=roles,
         )
-        jsonschema.validate(script, schema)
-        script_path = output_dir / "script.json"
-        with script_path.open("w", encoding="utf-8") as f:
-            json.dump(script, f, indent=2, ensure_ascii=False)
-        return ConversionResult(
-            request_id=request_id,
-            script=script,
-            script_path=script_path,
-            image_path=original_path,
-            image_urls=image_urls,
-        )
+        try:
+            jsonschema.validate(script, schema)
+            if validated_embedded_json is not None:
+                gemini_role_count = _script_role_count(script)
+                embedded_role_count = _script_role_count(validated_embedded_json)
+                if embedded_role_count >= 4 and gemini_role_count < max(3, embedded_role_count // 2):
+                    logger.warning(
+                        "Gemini script looked sparse (%d roles vs %d embedded); using embedded JSON fallback.",
+                        gemini_role_count,
+                        embedded_role_count,
+                    )
+                else:
+                    script_path = output_dir / "script.json"
+                    with script_path.open("w", encoding="utf-8") as f:
+                        json.dump(script, f, indent=2, ensure_ascii=False)
+                    return ConversionResult(
+                        request_id=request_id,
+                        script=script,
+                        script_path=script_path,
+                        image_path=original_path,
+                        image_urls=image_urls,
+                    )
+            else:
+                script_path = output_dir / "script.json"
+                with script_path.open("w", encoding="utf-8") as f:
+                    json.dump(script, f, indent=2, ensure_ascii=False)
+                return ConversionResult(
+                    request_id=request_id,
+                    script=script,
+                    script_path=script_path,
+                    image_path=original_path,
+                    image_urls=image_urls,
+                )
+        except jsonschema.ValidationError as exc:
+            logger.warning(
+                "Gemini-built script failed schema validation; falling back to embedded/local OCR: %s",
+                exc.message,
+            )
 
     # --- 3. Use embedded JSON directly if it passes schema validation ---
-    if embedded_json:
-        try:
-            jsonschema.validate(embedded_json, schema)
-            logger.info("Using embedded JSON as script directly")
-            _apply_meta_overrides(embedded_json, script_name_override, author_override)
-            script_path = output_dir / "script.json"
-            with script_path.open("w", encoding="utf-8") as f:
-                json.dump(embedded_json, f, indent=2, ensure_ascii=False)
-            return ConversionResult(
-                request_id=request_id,
-                script=embedded_json,
-                script_path=script_path,
-                image_path=original_path,
-                image_urls={},
-            )
-        except jsonschema.ValidationError:
-            logger.info("Embedded JSON failed schema validation; falling back to local OCR")
+    if validated_embedded_json:
+        logger.info("Using embedded JSON as script directly")
+        _apply_meta_overrides(validated_embedded_json, script_name_override, author_override)
+        script_path = output_dir / "script.json"
+        with script_path.open("w", encoding="utf-8") as f:
+            json.dump(validated_embedded_json, f, indent=2, ensure_ascii=False)
+        return ConversionResult(
+            request_id=request_id,
+            script=validated_embedded_json,
+            script_path=script_path,
+            image_path=original_path,
+            image_urls={},
+        )
 
     # --- 4. Fall back to local pytesseract OCR ---
     lines = _extract_lines(image)

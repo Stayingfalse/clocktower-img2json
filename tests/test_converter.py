@@ -266,6 +266,139 @@ def test_extract_script_gemini_logs_redacted_request_body_on_400(caplog):
     assert any('"data": "<redacted>"' in record.message for record in caplog.records)
 
 
+def test_convert_image_bytes_to_script_falls_back_to_valid_embedded_json_when_gemini_fails_schema(tmp_path):
+    embedded_script = [
+        {"id": "_meta", "name": "Embedded Script"},
+        "washerwoman",
+        "imp",
+    ]
+    image_bytes = _png_bytes_with_json(embedded_script)
+
+    gemini_body = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": json.dumps(
+                                {
+                                    "script_name": "Gemini Script",
+                                    "author": "Tester",
+                                    "lines": [
+                                        {"text": "Townsfolk", "x": 80, "y": 10, "width": 120, "height": 20},
+                                        {"text": "Washerwoman", "x": 80, "y": 40, "width": 180, "height": 20},
+                                        {"text": "You start knowing things.", "x": 80, "y": 62, "width": 220, "height": 18},
+                                    ],
+                                }
+                            )
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    mock_response = Mock()
+    mock_response.json.return_value = gemini_body
+    mock_response.raise_for_status.return_value = None
+
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
+        "clocktower_img2json.converter.requests.post", return_value=mock_response
+    ), patch(
+        "clocktower_img2json.converter.get_script_schema",
+        return_value={"type": "array", "minItems": 3},
+    ), patch(
+        "clocktower_img2json.converter.get_official_role_maps",
+        return_value=(
+            {},
+            {
+                "washerwoman": OfficialRole(
+                    id="washerwoman",
+                    name="Washerwoman",
+                    team="townsfolk",
+                    ability="You start knowing that 1 of 2 players is a particular Townsfolk.",
+                )
+            },
+        ),
+    ):
+        result = convert_image_bytes_to_script(
+            image_bytes=image_bytes,
+            storage_dir=tmp_path,
+            public_base_url="http://example.test",
+            request_id="abc12345",
+        )
+
+    assert result.script == embedded_script
+    assert result.image_urls == {}
+
+
+def test_convert_image_bytes_to_script_prefers_richer_embedded_json_when_gemini_is_sparse(tmp_path):
+    embedded_script = [
+        {"id": "_meta", "name": "Embedded Script"},
+        "washerwoman",
+        "librarian",
+        "investigator",
+        "poisoner",
+        "imp",
+    ]
+    image_bytes = _png_bytes_with_json(embedded_script)
+
+    gemini_body = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": json.dumps(
+                                {
+                                    "script_name": "Gemini Script",
+                                    "author": "Tester",
+                                    "lines": [
+                                        {"text": "Townsfolk", "x": 80, "y": 10, "width": 120, "height": 20},
+                                        {"text": "Washerwoman", "x": 80, "y": 40, "width": 180, "height": 20},
+                                        {"text": "You start knowing things.", "x": 80, "y": 62, "width": 220, "height": 18},
+                                    ],
+                                }
+                            )
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    mock_response = Mock()
+    mock_response.json.return_value = gemini_body
+    mock_response.raise_for_status.return_value = None
+
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
+        "clocktower_img2json.converter.requests.post", return_value=mock_response
+    ), patch(
+        "clocktower_img2json.converter.get_script_schema",
+        return_value={"type": "array", "minItems": 1},
+    ), patch(
+        "clocktower_img2json.converter.get_official_role_maps",
+        return_value=(
+            {},
+            {
+                "washerwoman": OfficialRole(
+                    id="washerwoman",
+                    name="Washerwoman",
+                    team="townsfolk",
+                    ability="You start knowing that 1 of 2 players is a particular Townsfolk.",
+                )
+            },
+        ),
+    ):
+        result = convert_image_bytes_to_script(
+            image_bytes=image_bytes,
+            storage_dir=tmp_path,
+            public_base_url="http://example.test",
+            request_id="abc12345",
+        )
+
+    assert result.script == embedded_script
+    assert result.image_urls == {}
+
+
 # --- _extract_embedded_json ---
 
 def test_extract_embedded_json_returns_none_for_plain_png():
