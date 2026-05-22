@@ -385,6 +385,8 @@
         <div class="toolbar-group">
           <button id="addOfficialButton" type="button" class="secondary">Add Official Role</button>
           <button id="addHomebrewButton" type="button" class="secondary">Add Homebrew Role</button>
+          <button id="arrangeFirstNightButton" type="button" class="secondary">Arrange First Night</button>
+          <button id="arrangeOtherNightButton" type="button" class="secondary">Arrange Other Nights</button>
         </div>
         <div class="toolbar-group">
           <input id="editorInput" type="text" maxlength="80" placeholder="Editor nickname">
@@ -437,6 +439,8 @@
     const saveButton = document.getElementById('saveButton');
     const addOfficialButton = document.getElementById('addOfficialButton');
     const addHomebrewButton = document.getElementById('addHomebrewButton');
+    const arrangeFirstNightButton = document.getElementById('arrangeFirstNightButton');
+    const arrangeOtherNightButton = document.getElementById('arrangeOtherNightButton');
     const editorInput = document.getElementById('editorInput');
     const statusLine = document.getElementById('statusLine');
     const jsonLink = document.getElementById('jsonLink');
@@ -485,6 +489,18 @@
       return `homebrew-${index}`;
     }
 
+    function parseNightOrderValue(value) {
+      const raw = String(value ?? '').trim();
+      if (!raw) {
+        return null;
+      }
+      const parsed = Number.parseInt(raw, 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return null;
+      }
+      return parsed;
+    }
+
     function normalizeEntry(entry) {
       if (entry && typeof entry === 'object' && entry.id === '_meta') {
         return { ...entry };
@@ -503,7 +519,13 @@
 
       if (entry && typeof entry === 'object') {
         const roleId = String(entry.id || '').trim();
-        const looksOfficial = roleId && !entry.name && !entry.ability && !entry.team && !entry.image;
+        const looksOfficial = roleId
+          && !entry.name
+          && !entry.ability
+          && !entry.team
+          && !entry.image
+          && !Object.prototype.hasOwnProperty.call(entry, 'firstNight')
+          && !Object.prototype.hasOwnProperty.call(entry, 'otherNight');
         if (looksOfficial) {
           const role = officialRoleMap.get(roleId);
           return {
@@ -521,6 +543,8 @@
           ability: String(entry.ability || '').trim(),
           team: String(entry.team || 'townsfolk').trim() || 'townsfolk',
           image: String(entry.image || '').trim(),
+          firstNight: parseNightOrderValue(entry.firstNight),
+          otherNight: parseNightOrderValue(entry.otherNight),
         };
       }
 
@@ -531,6 +555,8 @@
         ability: '',
         team: 'townsfolk',
         image: '',
+        firstNight: null,
+        otherNight: null,
       };
     }
 
@@ -574,6 +600,8 @@
           ability: card.querySelector('[data-field="ability"]').value.trim(),
           team: card.querySelector('[data-field="team"]').value,
           image: entry?.image || '',
+          firstNight: parseNightOrderValue(card.querySelector('[data-field="first-night"]').value),
+          otherNight: parseNightOrderValue(card.querySelector('[data-field="other-night"]').value),
         };
       });
     }
@@ -621,6 +649,8 @@
                 <h2>${escapeHtml(displayName)}</h2>
                 <div class="badge-row">
                   <span class="badge">${escapeHtml(entry.team || 'unassigned')}</span>
+                  ${entry.firstNight !== null && entry.firstNight !== undefined ? `<span class="badge">First: ${escapeHtml(entry.firstNight)}</span>` : ''}
+                  ${entry.otherNight !== null && entry.otherNight !== undefined ? `<span class="badge">Other: ${escapeHtml(entry.otherNight)}</span>` : ''}
                 </div>
               </div>
             </div>
@@ -662,6 +692,14 @@
                     ${TEAM_OPTIONS.map((team) => `<option value="${team}" ${team === (entry.team || 'townsfolk') ? 'selected' : ''}>${team.charAt(0).toUpperCase() + team.slice(1)}</option>`).join('')}
                   </select>
                 </div>
+                <div class="field">
+                  <label for="first-night-${index}">First Night Order</label>
+                  <input id="first-night-${index}" data-field="first-night" type="number" min="0" step="1" value="${entry.firstNight ?? ''}">
+                </div>
+                <div class="field">
+                  <label for="other-night-${index}">Other Nights Order</label>
+                  <input id="other-night-${index}" data-field="other-night" type="number" min="0" step="1" value="${entry.otherNight ?? ''}">
+                </div>
               `}
             </div>
           </article>
@@ -688,8 +726,34 @@
         if (entry.image) {
           payload.image = entry.image;
         }
+        if (entry.firstNight !== null && entry.firstNight !== undefined) {
+          payload.firstNight = entry.firstNight;
+        }
+        if (entry.otherNight !== null && entry.otherNight !== undefined) {
+          payload.otherNight = entry.otherNight;
+        }
         return payload;
       });
+    }
+
+    function arrangeNightOrder(field, label) {
+      syncEntriesFromDom();
+      const metaEntries = scriptData.filter((entry) => entry && typeof entry === 'object' && entry.id === '_meta');
+      const roleEntries = scriptData.filter((entry) => !(entry && typeof entry === 'object' && entry.id === '_meta'));
+      roleEntries.sort((a, b) => {
+        const aOrder = parseNightOrderValue(a?.[field]);
+        const bOrder = parseNightOrderValue(b?.[field]);
+        if (aOrder === null && bOrder === null) {
+          return String(a?.name || a?.id || '').localeCompare(String(b?.name || b?.id || ''));
+        }
+        if (aOrder === null) return 1;
+        if (bOrder === null) return -1;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        return String(a?.name || a?.id || '').localeCompare(String(b?.name || b?.id || ''));
+      });
+      scriptData = [...metaEntries, ...roleEntries];
+      renderCards();
+      setStatus(`${label} order arranged locally. Save to persist the change.`);
     }
 
     async function loadOfficialRoles() {
@@ -742,6 +806,8 @@
         saveButton.disabled = true;
         addOfficialButton.disabled = true;
         addHomebrewButton.disabled = true;
+        arrangeFirstNightButton.disabled = true;
+        arrangeOtherNightButton.disabled = true;
         return;
       }
 
@@ -775,6 +841,8 @@
         renderCards();
         addHomebrewButton.disabled = false;
         addOfficialButton.disabled = officialRoles.length === 0;
+        arrangeFirstNightButton.disabled = false;
+        arrangeOtherNightButton.disabled = false;
         setStatus(rolesWarning || 'Script loaded successfully.', rolesWarning ? 'error' : '');
       } catch (error) {
         scriptTitle.textContent = 'Unable to load script';
@@ -783,6 +851,8 @@
         saveButton.disabled = true;
         addOfficialButton.disabled = true;
         addHomebrewButton.disabled = true;
+        arrangeFirstNightButton.disabled = true;
+        arrangeOtherNightButton.disabled = true;
         setStatus(error.message || 'Unable to load script.', 'error');
       }
     }
@@ -845,11 +915,15 @@
         ability: '',
         team: 'townsfolk',
         image: '',
+        firstNight: null,
+        otherNight: null,
       });
       renderCards();
       setStatus('Homebrew role added locally. Save to persist the change.');
     });
 
+    arrangeFirstNightButton.addEventListener('click', () => arrangeNightOrder('firstNight', 'First night'));
+    arrangeOtherNightButton.addEventListener('click', () => arrangeNightOrder('otherNight', 'Other night'));
     saveButton.addEventListener('click', saveChanges);
     loadScript();
   </script>

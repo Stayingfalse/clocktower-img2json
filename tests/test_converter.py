@@ -239,7 +239,8 @@ def test_convert_image_bytes_to_script_uses_gemini_icon_bounds_for_homebrew(tmp_
     role = result.script[1]
     assert role["id"] == "my-homebrew"
     saved_icon = Image.open(tmp_path / "abc12345" / "images" / "my-homebrew.png")
-    assert saved_icon.size == (52, 52)
+    assert saved_icon.size == (80, 80)
+    assert saved_icon.getpixel((40, 40))[0] > 200
 
 
 def test_convert_image_bytes_to_script_builds_from_gemini_roles_payload(tmp_path):

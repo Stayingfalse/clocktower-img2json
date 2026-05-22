@@ -439,16 +439,40 @@ def _crop_icon(image: Image.Image, role_bbox: tuple[int, int, int, int], icon_bb
     if icon_bbox is None:
         return crop_icon_for_role(image, role_bbox)
 
-    pad = 6
     x0, y0, x1, y1 = icon_bbox
-    return image.crop(
-        (
-            max(0, x0 - pad),
-            max(0, y0 - pad),
-            min(image.width, x1 + pad),
-            min(image.height, y1 + pad),
-        )
-    )
+    if x1 <= x0 or y1 <= y0:
+        return crop_icon_for_role(image, role_bbox)
+
+    role_height = max(32, role_bbox[3] - role_bbox[1])
+    icon_size = max(x1 - x0, y1 - y0)
+    target_size = max(icon_size + 28, int(role_height * 2.5), 72)
+
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+    crop_x0 = int(round(cx - (target_size / 2)))
+    crop_y0 = int(round(cy - (target_size / 2)))
+    crop_x1 = crop_x0 + target_size
+    crop_y1 = crop_y0 + target_size
+
+    if crop_x0 < 0:
+        crop_x1 -= crop_x0
+        crop_x0 = 0
+    if crop_y0 < 0:
+        crop_y1 -= crop_y0
+        crop_y0 = 0
+    if crop_x1 > image.width:
+        delta = crop_x1 - image.width
+        crop_x0 = max(0, crop_x0 - delta)
+        crop_x1 = image.width
+    if crop_y1 > image.height:
+        delta = crop_y1 - image.height
+        crop_y0 = max(0, crop_y0 - delta)
+        crop_y1 = image.height
+
+    if crop_x1 <= crop_x0 or crop_y1 <= crop_y0:
+        return crop_icon_for_role(image, role_bbox)
+
+    return image.crop((crop_x0, crop_y0, crop_x1, crop_y1))
 
 
 def _build_script_from_roles(
