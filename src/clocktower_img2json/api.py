@@ -5,6 +5,7 @@ import os
 import re
 import uuid
 from contextlib import asynccontextmanager
+from io import BytesIO
 from pathlib import Path
 
 import jsonschema
@@ -20,6 +21,7 @@ from .startup import refresh_official_roles
 
 _SAFE_UUID_RE = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
 _SAFE_ASSET_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
+_SAFE_ROLE_ID_RE = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
 _LOGO_WIDTH = 600
 _LOGO_HEIGHT = 150
 _LOGO_BG = "#20252f"
@@ -346,6 +348,46 @@ def create_app(
             "status": "ok",
             "message": "Script updated successfully",
             "uuid": safe_uid,
+        }
+
+    @app.post("/api/script/{uuid_str}/icon/{role_id}")
+    async def update_script_icon(
+        uuid_str: str,
+        role_id: str,
+        image: UploadFile = File(...),
+        edited_by: str | None = None,
+    ):
+        safe_uid = _safe_uuid(uuid_str)
+        if not _SAFE_ROLE_ID_RE.match(role_id):
+            raise HTTPException(status_code=400, detail="Invalid role identifier")
+        script_dir = _existing_script_dir(storage_path, safe_uid)
+        if not script_record_exists(safe_uid, db_path=app.state.db_path):
+            raise HTTPException(status_code=404, detail="Script metadata not found")
+
+        image_bytes = await image.read()
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded image is empty")
+        try:
+            icon = Image.open(BytesIO(image_bytes)).convert("RGBA")
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid image") from exc
+
+        icon_filename = f"script.{role_id}.png"
+        icon_path = script_dir / icon_filename
+        icon.save(icon_path, format="PNG")
+
+        log_script_edit(
+            safe_uid,
+            edited_by=(edited_by or "anonymous").strip() or "anonymous",
+            change_summary=f"Updated icon for role {role_id}",
+            db_path=app.state.db_path,
+        )
+        return {
+            "status": "ok",
+            "message": "Icon updated successfully",
+            "uuid": safe_uid,
+            "role_id": role_id,
+            "asset_url": f"/script/{safe_uid}/{icon_filename}",
         }
 
     @app.get("/script/{uuid_str}/script.json")
