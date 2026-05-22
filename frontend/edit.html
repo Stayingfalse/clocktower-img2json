@@ -370,6 +370,26 @@
       border-color: rgba(124,92,255,0.7);
     }
 
+    .thumb-loading {
+      cursor: progress;
+      position: relative;
+      pointer-events: none;
+    }
+
+    .thumb-loading::before {
+      content: '';
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 3px solid rgba(255,255,255,0.2);
+      border-top-color: var(--accent-2);
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -586,6 +606,8 @@
     let scriptData = [];
     let officialRoles = [];
     let officialRoleMap = new Map();
+    const iconRefreshTokenByRole = new Map();
+    const ICON_UPLOAD_THROBBER_MS = 1800;
     let iconEditor = {
       activeIndex: null,
       roleId: '',
@@ -645,6 +667,16 @@
         return null;
       }
       return parsed;
+    }
+
+    function iconSrcForRole(roleId) {
+      const token = iconRefreshTokenByRole.get(roleId);
+      const cacheBust = token ? `?t=${encodeURIComponent(token)}` : '';
+      return `/script/${encodeURIComponent(scriptId)}/script.${encodeURIComponent(roleId)}.png${cacheBust}`;
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     function setIconEditorStatus(message = '', tone = '') {
@@ -732,20 +764,37 @@
       const nickname = editorInput.value.trim() || 'anonymous';
       const formData = new FormData();
       formData.append('image', file, file.name || `${iconEditor.roleId}.png`);
+      const currentRoleId = iconEditor.roleId;
+      const activeEntry = Number.isInteger(iconEditor.activeIndex) ? scriptData[iconEditor.activeIndex] : null;
+      if (activeEntry) {
+        activeEntry._iconUploading = true;
+      }
+      renderCards();
+      const startedAt = Date.now();
 
       const response = await fetch(
-        `/api/script/${encodeURIComponent(scriptId)}/icon/${encodeURIComponent(iconEditor.roleId)}?edited_by=${encodeURIComponent(nickname)}`,
+        `/api/script/${encodeURIComponent(scriptId)}/icon/${encodeURIComponent(currentRoleId)}?edited_by=${encodeURIComponent(nickname)}`,
         { method: 'POST', body: formData },
       );
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (activeEntry) {
+          activeEntry._iconUploading = false;
+          renderCards();
+        }
         throw new Error(payload.detail || 'Icon upload failed.');
       }
-      if (Number.isInteger(iconEditor.activeIndex) && scriptData[iconEditor.activeIndex]) {
-        scriptData[iconEditor.activeIndex].image = payload.asset_url || '';
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < ICON_UPLOAD_THROBBER_MS) {
+        await sleep(ICON_UPLOAD_THROBBER_MS - elapsed);
       }
+      if (activeEntry) {
+        activeEntry.image = payload.asset_url || '';
+        activeEntry._iconUploading = false;
+      }
+      iconRefreshTokenByRole.set(currentRoleId, Date.now());
       renderCards();
-      setStatus(`Icon updated for ${iconEditor.roleId}.`, 'success');
+      setStatus(`Icon updated for ${currentRoleId}.`, 'success');
       closeIconEditor();
     }
 
@@ -900,7 +949,9 @@
         const displayName = standard ? (entry.name || roleId) : (entry.name || roleId || 'New homebrew role');
         const thumb = standard
           ? '<div class="thumb">🜁</div>'
-          : `<button type="button" class="thumb thumb-button" data-action="edit-icon" title="Edit icon crop / upload"><img src="/script/${encodeURIComponent(scriptId)}/script.${encodeURIComponent(roleId)}.png" alt="${escapeHtml(displayName)} thumbnail" onerror="this.closest('.thumb').innerHTML='🜂';"></button>`;
+          : (entry._iconUploading
+            ? '<div class="thumb thumb-loading" title="Uploading icon…"></div>'
+            : `<button type="button" class="thumb thumb-button" data-action="edit-icon" title="Edit icon crop / upload"><img src="${iconSrcForRole(roleId)}" alt="${escapeHtml(displayName)} thumbnail" onerror="this.closest('.thumb').innerHTML='🜂';"></button>`);
         const officialOptions = (officialRoles.some((role) => role.id === roleId)
           ? officialRoles
           : [{ id: roleId, name: entry.name || roleId, team: entry.team || '', ability: entry.ability || '' }, ...officialRoles]

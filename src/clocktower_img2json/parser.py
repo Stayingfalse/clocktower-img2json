@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -163,4 +164,69 @@ def crop_icon_for_role(image: Image.Image, bbox: tuple[int, int, int, int]) -> I
 
 def save_icon(icon: Image.Image, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    icon.convert("RGBA").save(out_path, format="PNG")
+    remove_background(icon).save(out_path, format="PNG")
+
+
+def remove_background(icon: Image.Image, threshold: int = 44) -> Image.Image:
+    image = icon.convert("RGBA")
+    width, height = image.size
+    if width < 2 or height < 2:
+        return image
+
+    pixels = image.load()
+    sample_size = max(1, min(8, width // 4, height // 4))
+    corner_pixels: list[tuple[int, int, int]] = []
+    boxes = [
+        (0, 0, sample_size, sample_size),
+        (max(0, width - sample_size), 0, width, sample_size),
+        (0, max(0, height - sample_size), sample_size, height),
+        (max(0, width - sample_size), max(0, height - sample_size), width, height),
+    ]
+    for x0, y0, x1, y1 in boxes:
+        for x in range(x0, x1):
+            for y in range(y0, y1):
+                r, g, b, _ = pixels[x, y]
+                corner_pixels.append((r, g, b))
+
+    if not corner_pixels:
+        return image
+
+    bg_r = sum(r for r, _, _ in corner_pixels) / len(corner_pixels)
+    bg_g = sum(g for _, g, _ in corner_pixels) / len(corner_pixels)
+    bg_b = sum(b for _, _, b in corner_pixels) / len(corner_pixels)
+    threshold_sq = threshold * threshold
+
+    def _near_bg(x: int, y: int) -> bool:
+        r, g, b, _ = pixels[x, y]
+        dist_sq = (r - bg_r) ** 2 + (g - bg_g) ** 2 + (b - bg_b) ** 2
+        return dist_sq <= threshold_sq
+
+    visited = [[False] * width for _ in range(height)]
+    queue: deque[tuple[int, int]] = deque()
+
+    for x in range(width):
+        if _near_bg(x, 0):
+            queue.append((x, 0))
+        if _near_bg(x, height - 1):
+            queue.append((x, height - 1))
+    for y in range(height):
+        if _near_bg(0, y):
+            queue.append((0, y))
+        if _near_bg(width - 1, y):
+            queue.append((width - 1, y))
+
+    while queue:
+        x, y = queue.popleft()
+        if visited[y][x]:
+            continue
+        visited[y][x] = True
+        r, g, b, _ = pixels[x, y]
+        pixels[x, y] = (r, g, b, 0)
+        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+            if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                continue
+            if visited[ny][nx] or not _near_bg(nx, ny):
+                continue
+            queue.append((nx, ny))
+
+    return image
