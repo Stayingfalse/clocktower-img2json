@@ -210,6 +210,26 @@ def test_upload_empty_file_returns_400(client):
     assert response.status_code == 400
 
 
+def test_upload_invalid_image_returns_400(client):
+    tc, _, _ = client
+    response = tc.post(
+        "/api/upload",
+        files={"image": ("not-image.png", io.BytesIO(b"not a png"), "image/png")},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded file is not a valid image"
+
+
+def test_scripts_from_upload_invalid_image_returns_400(client):
+    tc, _, _ = client
+    response = tc.post(
+        "/scripts/from-upload",
+        files={"image": ("not-image.png", io.BytesIO(b"not a png"), "image/png")},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded file is not a valid image"
+
+
 def test_get_script_json_returns_file(client):
     tc, tmp_path, _ = client
     uid = "abc12345"
