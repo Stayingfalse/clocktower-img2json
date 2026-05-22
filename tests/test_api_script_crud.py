@@ -1,6 +1,7 @@
 """Tests for filesystem-first GET /api/script and audited POST updates."""
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from clocktower_img2json.api import create_app
 
@@ -68,6 +70,13 @@ def _seed_script(tmp_path: Path, db_path: Path, uid: str, script: list) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.execute("INSERT INTO scripts (uuid, creator) VALUES (?, ?)", (uid, "tester"))
         conn.commit()
+
+
+def _make_png_bytes(color: tuple[int, int, int] = (20, 120, 220)) -> bytes:
+    image = Image.new("RGB", (64, 64), color=color)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def test_get_script_reads_script_json_from_disk(client):
@@ -159,3 +168,51 @@ def test_update_script_preserves_night_order_fields(client):
     assert response.status_code == 200
     saved = json.loads((tmp_path / uid / "script.json").read_text())
     assert saved == UPDATED_SCRIPT_WITH_NIGHT_ORDER
+
+
+def test_update_script_icon_overwrites_png_and_logs_edit(client):
+    tc, tmp_path, db_path = client
+    uid = "icon3344"
+    _seed_script(tmp_path, db_path, uid, SAMPLE_SCRIPT)
+
+    response = tc.post(
+        f"/api/script/{uid}/icon/nightwatch?edited_by=IconArtist",
+        files={"image": ("icon.png", io.BytesIO(_make_png_bytes()), "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert (tmp_path / uid / "script.nightwatch.png").exists()
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT edited_by, change_summary FROM edit_history WHERE script_uuid = ? ORDER BY id DESC LIMIT 1",
+            (uid,),
+        ).fetchone()
+    assert row == ("IconArtist", "Updated icon for role nightwatch")
+
+
+def test_update_script_icon_rejects_bad_role_identifier(client):
+    tc, tmp_path, db_path = client
+    uid = "icon5566"
+    _seed_script(tmp_path, db_path, uid, SAMPLE_SCRIPT)
+
+    response = tc.post(
+        f"/api/script/{uid}/icon/bad.role",
+        files={"image": ("icon.png", io.BytesIO(_make_png_bytes()), "image/png")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_update_script_icon_rejects_non_image_file(client):
+    tc, tmp_path, db_path = client
+    uid = "icon7788"
+    _seed_script(tmp_path, db_path, uid, SAMPLE_SCRIPT)
+
+    response = tc.post(
+        f"/api/script/{uid}/icon/nightwatch",
+        files={"image": ("not-image.txt", io.BytesIO(b"hello"), "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded file is not a valid image"

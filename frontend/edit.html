@@ -361,6 +361,114 @@
       color: var(--muted);
     }
 
+    .thumb-button {
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .thumb-button:hover {
+      border-color: rgba(124,92,255,0.7);
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      background: rgba(0,0,0,0.7);
+      z-index: 40;
+      padding: 16px;
+    }
+
+    .modal-backdrop.open {
+      display: grid;
+    }
+
+    .modal-panel {
+      width: min(980px, 100%);
+      max-height: calc(100vh - 32px);
+      overflow: auto;
+      padding: 18px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      display: grid;
+      gap: 12px;
+    }
+
+    .modal-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .modal-topbar h3 {
+      margin: 0;
+      font-size: 1.05rem;
+    }
+
+    .modal-preview-wrap {
+      position: relative;
+      width: 100%;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      min-height: 160px;
+      display: grid;
+      place-items: center;
+    }
+
+    .modal-preview-wrap img {
+      width: 100%;
+      height: auto;
+      display: block;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    .draw-layer {
+      position: absolute;
+      inset: 0;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .selection-box {
+      position: absolute;
+      border: 2px solid var(--accent-2);
+      background: rgba(94,234,212,0.18);
+      pointer-events: none;
+      display: none;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .modal-actions button {
+      min-height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+      padding: 0 14px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+    }
+
+    .modal-actions button.primary {
+      background: linear-gradient(135deg, var(--accent), #9588ff);
+      border-color: transparent;
+      color: #fff;
+    }
+
     @media (max-width: 900px) {
       .hero { grid-template-columns: 1fr; }
     }
@@ -422,6 +530,26 @@
     <section id="cards" class="cards"></section>
   </main>
 
+  <div id="iconEditorModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-panel">
+      <div class="modal-topbar">
+        <h3>Edit icon for <span id="iconEditorRoleLabel">role</span></h3>
+        <button id="iconEditorClose" type="button" class="secondary">Close</button>
+      </div>
+      <p id="iconEditorStatus" class="status">Drag a box over the original upload to crop a replacement icon.</p>
+      <div id="iconPreviewWrap" class="modal-preview-wrap">
+        <img id="iconSourceImage" alt="Original uploaded script image">
+        <div id="iconDrawLayer" class="draw-layer"></div>
+        <div id="iconSelection" class="selection-box"></div>
+      </div>
+      <input id="iconManualFile" type="file" accept="image/*" hidden>
+      <div class="modal-actions">
+        <button id="iconManualUploadButton" type="button">Upload Manual Icon</button>
+        <button id="iconCropUploadButton" type="button" class="primary">Crop &amp; Upload</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const TEAM_OPTIONS = ['townsfolk', 'outsider', 'minion', 'demon'];
     const params = new URLSearchParams(window.location.search);
@@ -444,10 +572,28 @@
     const editorInput = document.getElementById('editorInput');
     const statusLine = document.getElementById('statusLine');
     const jsonLink = document.getElementById('jsonLink');
+    const iconEditorModal = document.getElementById('iconEditorModal');
+    const iconEditorClose = document.getElementById('iconEditorClose');
+    const iconEditorRoleLabel = document.getElementById('iconEditorRoleLabel');
+    const iconEditorStatus = document.getElementById('iconEditorStatus');
+    const iconSourceImage = document.getElementById('iconSourceImage');
+    const iconDrawLayer = document.getElementById('iconDrawLayer');
+    const iconSelection = document.getElementById('iconSelection');
+    const iconCropUploadButton = document.getElementById('iconCropUploadButton');
+    const iconManualUploadButton = document.getElementById('iconManualUploadButton');
+    const iconManualFile = document.getElementById('iconManualFile');
 
     let scriptData = [];
     let officialRoles = [];
     let officialRoleMap = new Map();
+    let iconEditor = {
+      activeIndex: null,
+      roleId: '',
+      drawing: false,
+      startX: 0,
+      startY: 0,
+      selection: null,
+    };
 
     function setStatus(message = '', tone = '') {
       statusLine.textContent = message;
@@ -499,6 +645,136 @@
         return null;
       }
       return parsed;
+    }
+
+    function setIconEditorStatus(message = '', tone = '') {
+      iconEditorStatus.textContent = message;
+      iconEditorStatus.className = `status${tone ? ` ${tone}` : ''}`;
+    }
+
+    function closeIconEditor() {
+      iconEditorModal.classList.remove('open');
+      iconEditorModal.setAttribute('aria-hidden', 'true');
+      iconEditor = {
+        activeIndex: null,
+        roleId: '',
+        drawing: false,
+        startX: 0,
+        startY: 0,
+        selection: null,
+      };
+      iconSelection.style.display = 'none';
+      iconManualFile.value = '';
+    }
+
+    function setIconSelectionBox() {
+      const selection = iconEditor.selection;
+      if (!selection) {
+        iconSelection.style.display = 'none';
+        return;
+      }
+      const x = Math.min(selection.x0, selection.x1);
+      const y = Math.min(selection.y0, selection.y1);
+      const w = Math.abs(selection.x1 - selection.x0);
+      const h = Math.abs(selection.y1 - selection.y0);
+      if (w < 2 || h < 2) {
+        iconSelection.style.display = 'none';
+        return;
+      }
+      iconSelection.style.display = 'block';
+      iconSelection.style.left = `${x}px`;
+      iconSelection.style.top = `${y}px`;
+      iconSelection.style.width = `${w}px`;
+      iconSelection.style.height = `${h}px`;
+    }
+
+    function getDrawPoint(event) {
+      const rect = iconDrawLayer.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+      const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+      return { x, y };
+    }
+
+    function getCropRectInSourcePixels() {
+      const selection = iconEditor.selection;
+      if (!selection || !iconSourceImage.naturalWidth || !iconSourceImage.naturalHeight) {
+        return null;
+      }
+      const displayRect = iconSourceImage.getBoundingClientRect();
+      if (!displayRect.width || !displayRect.height) {
+        return null;
+      }
+      const x = Math.min(selection.x0, selection.x1);
+      const y = Math.min(selection.y0, selection.y1);
+      const w = Math.abs(selection.x1 - selection.x0);
+      const h = Math.abs(selection.y1 - selection.y0);
+      if (w < 4 || h < 4) {
+        return null;
+      }
+      const scaleX = iconSourceImage.naturalWidth / displayRect.width;
+      const scaleY = iconSourceImage.naturalHeight / displayRect.height;
+      const sx = Math.max(0, Math.floor(x * scaleX));
+      const sy = Math.max(0, Math.floor(y * scaleY));
+      const sw = Math.max(1, Math.round(w * scaleX));
+      const sh = Math.max(1, Math.round(h * scaleY));
+      return {
+        sx,
+        sy,
+        sw: Math.min(sw, iconSourceImage.naturalWidth - sx),
+        sh: Math.min(sh, iconSourceImage.naturalHeight - sy),
+      };
+    }
+
+    async function uploadRoleIcon(file) {
+      if (!scriptId || !iconEditor.roleId) {
+        throw new Error('Missing script or role id.');
+      }
+      const nickname = editorInput.value.trim() || 'anonymous';
+      const formData = new FormData();
+      formData.append('image', file, file.name || `${iconEditor.roleId}.png`);
+
+      const response = await fetch(
+        `/api/script/${encodeURIComponent(scriptId)}/icon/${encodeURIComponent(iconEditor.roleId)}?edited_by=${encodeURIComponent(nickname)}`,
+        { method: 'POST', body: formData },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || 'Icon upload failed.');
+      }
+      if (Number.isInteger(iconEditor.activeIndex) && scriptData[iconEditor.activeIndex]) {
+        scriptData[iconEditor.activeIndex].image = payload.asset_url || '';
+      }
+      renderCards();
+      setStatus(`Icon updated for ${iconEditor.roleId}.`, 'success');
+      closeIconEditor();
+    }
+
+    function openIconEditor(index) {
+      const entry = scriptData[index];
+      if (!entry || roleIsStandard(entry)) {
+        return;
+      }
+      const roleId = slugifyId(entry.id || '');
+      if (!roleId) {
+        setStatus('Role ID is required before editing icon.', 'error');
+        return;
+      }
+      iconEditor.activeIndex = index;
+      iconEditor.roleId = roleId;
+      iconEditor.selection = null;
+      iconEditor.drawing = false;
+      iconEditorRoleLabel.textContent = roleId;
+      setIconEditorStatus('Drag a box over the original upload, then click "Crop & Upload".');
+      iconSelection.style.display = 'none';
+      iconEditorModal.classList.add('open');
+      iconEditorModal.setAttribute('aria-hidden', 'false');
+      iconSourceImage.onload = () => {
+        setIconEditorStatus('Original upload loaded. Draw a crop box.');
+      };
+      iconSourceImage.onerror = () => {
+        setIconEditorStatus('Original upload could not be loaded. Use manual upload instead.', 'error');
+      };
+      iconSourceImage.src = `/assets/${encodeURIComponent(scriptId)}/original.png?t=${Date.now()}`;
     }
 
     function normalizeEntry(entry) {
@@ -624,7 +900,7 @@
         const displayName = standard ? (entry.name || roleId) : (entry.name || roleId || 'New homebrew role');
         const thumb = standard
           ? '<div class="thumb">🜁</div>'
-          : `<div class="thumb"><img src="/script/${encodeURIComponent(scriptId)}/script.${encodeURIComponent(roleId)}.png" alt="${escapeHtml(displayName)} thumbnail" onerror="this.closest('.thumb').innerHTML='🜂';"></div>`;
+          : `<button type="button" class="thumb thumb-button" data-action="edit-icon" title="Edit icon crop / upload"><img src="/script/${encodeURIComponent(scriptId)}/script.${encodeURIComponent(roleId)}.png" alt="${escapeHtml(displayName)} thumbnail" onerror="this.closest('.thumb').innerHTML='🜂';"></button>`;
         const officialOptions = (officialRoles.some((role) => role.id === roleId)
           ? officialRoles
           : [{ id: roleId, name: entry.name || roleId, team: entry.team || '', ability: entry.ability || '' }, ...officialRoles]
@@ -872,6 +1148,10 @@
         scriptData.splice(index, 1);
         renderCards();
         setStatus('Entry removed locally. Save to persist the change.');
+        return;
+      }
+      if (button.dataset.action === 'edit-icon') {
+        openIconEditor(index);
       }
     });
 
@@ -924,6 +1204,100 @@
 
     arrangeFirstNightButton.addEventListener('click', () => arrangeNightOrder('firstNight', 'First night'));
     arrangeOtherNightButton.addEventListener('click', () => arrangeNightOrder('otherNight', 'Other night'));
+    iconEditorClose.addEventListener('click', closeIconEditor);
+    iconEditorModal.addEventListener('click', (event) => {
+      if (event.target === iconEditorModal) {
+        closeIconEditor();
+      }
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && iconEditorModal.classList.contains('open')) {
+        closeIconEditor();
+      }
+    });
+    iconDrawLayer.addEventListener('pointerdown', (event) => {
+      if (!iconEditorModal.classList.contains('open')) {
+        return;
+      }
+      iconEditor.drawing = true;
+      const { x, y } = getDrawPoint(event);
+      iconEditor.startX = x;
+      iconEditor.startY = y;
+      iconEditor.selection = { x0: x, y0: y, x1: x, y1: y };
+      setIconSelectionBox();
+      iconDrawLayer.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    iconDrawLayer.addEventListener('pointermove', (event) => {
+      if (!iconEditor.drawing || !iconEditor.selection) {
+        return;
+      }
+      const { x, y } = getDrawPoint(event);
+      iconEditor.selection.x0 = iconEditor.startX;
+      iconEditor.selection.y0 = iconEditor.startY;
+      iconEditor.selection.x1 = x;
+      iconEditor.selection.y1 = y;
+      setIconSelectionBox();
+    });
+    iconDrawLayer.addEventListener('pointerup', (event) => {
+      if (!iconEditor.drawing) {
+        return;
+      }
+      iconEditor.drawing = false;
+      iconDrawLayer.releasePointerCapture(event.pointerId);
+      if (!getCropRectInSourcePixels()) {
+        setIconEditorStatus('Selection is too small. Draw a larger box.', 'error');
+      } else {
+        setIconEditorStatus('Crop area selected. Click "Crop & Upload" to replace icon.');
+      }
+    });
+    iconCropUploadButton.addEventListener('click', async () => {
+      try {
+        const crop = getCropRectInSourcePixels();
+        if (!crop) {
+          throw new Error('Draw a crop box first.');
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = crop.sw;
+        canvas.height = crop.sh;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error('Browser canvas is unavailable.');
+        }
+        ctx.drawImage(
+          iconSourceImage,
+          crop.sx, crop.sy, crop.sw, crop.sh,
+          0, 0, crop.sw, crop.sh,
+        );
+        const blob = await new Promise((resolve, reject) => {
+          canvas.toBlob((value) => {
+            if (value) {
+              resolve(value);
+            } else {
+              reject(new Error('Failed to export cropped image.'));
+            }
+          }, 'image/png');
+        });
+        setIconEditorStatus('Uploading cropped icon…');
+        const file = new File([blob], `${iconEditor.roleId}.png`, { type: 'image/png' });
+        await uploadRoleIcon(file);
+      } catch (error) {
+        setIconEditorStatus(error.message || 'Failed to upload cropped icon.', 'error');
+      }
+    });
+    iconManualUploadButton.addEventListener('click', () => iconManualFile.click());
+    iconManualFile.addEventListener('change', async () => {
+      const file = iconManualFile.files && iconManualFile.files[0];
+      if (!file) {
+        return;
+      }
+      try {
+        setIconEditorStatus('Uploading manual icon…');
+        await uploadRoleIcon(file);
+      } catch (error) {
+        setIconEditorStatus(error.message || 'Failed to upload manual icon.', 'error');
+      }
+    });
     saveButton.addEventListener('click', saveChanges);
     loadScript();
   </script>
