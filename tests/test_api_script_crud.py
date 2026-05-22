@@ -197,11 +197,11 @@ def test_update_script_icon_rejects_bad_role_identifier(client):
     _seed_script(tmp_path, db_path, uid, SAMPLE_SCRIPT)
 
     response = tc.post(
-        f"/api/script/{uid}/icon/../../bad",
+        f"/api/script/{uid}/icon/bad.role",
         files={"image": ("icon.png", io.BytesIO(_make_png_bytes()), "image/png")},
     )
 
-    assert response.status_code in (400, 404)
+    assert response.status_code == 400
 
 
 def test_update_script_icon_rejects_non_image_file(client):
