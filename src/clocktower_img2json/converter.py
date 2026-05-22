@@ -14,23 +14,24 @@ import pytesseract
 import requests
 from PIL import Image
 
-from .data import get_official_role_maps, get_script_schema
-from .parser import OCRLine, crop_icon_for_role, parse_script_lines, save_icon, slugify_role_id
+from .data import get_official_role_maps, get_script_schema, normalize_name
+from .parser import OCRLine, ParsedRole, crop_icon_for_role, parse_script_lines, save_icon, slugify_role_id
 
 logger = logging.getLogger(__name__)
 
 _GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 _GEMINI_PROMPT = (
     "You are processing a Blood on the Clocktower custom script image."
-    " Read the visible text exactly as shown and return ONLY a valid JSON object"
-    ' with this shape: {"script_name": string|null, "author": string|null, "lines": [...]}'
-    ' where each line is {"text": string, "x": int, "y": int, "width": int, "height": int,'
+    " Return ONLY a valid JSON object with this shape:"
+    ' {"script_name": string|null, "author": string|null, "roles": [...]}'
+    ' where each role is {"name": string, "team": string|null, "ability": string|null,'
+    ' "x": int, "y": int, "width": int, "height": int,'
     ' "icon_x": int|null, "icon_y": int|null, "icon_width": int|null, "icon_height": int|null}.'
-    " Include every visible title, author, team header, role name, and ability line."
-    " The lines array must be exhaustive for the full script; do not return partial output."
-    " If multiple columns are present, include all columns from top to bottom."
-    " Use image pixel coordinates for the top-left corner and dimensions."
-    " If a line belongs to a role row and the matching icon/token is visible, include that icon box."
+    " Extract every visible role across all columns."
+    " Do NOT return a finished script array and do NOT infer missing roles."
+    " Team should be one of townsfolk/outsider/minion/demon/traveller when visible, otherwise null."
+    " Ability should contain only this role's ability text; do not merge adjacent roles."
+    " Use image pixel coordinates for role text and icon/token when visible."
     " Return only the JSON object, no explanation, no markdown fences."
 )
 
@@ -45,9 +46,19 @@ class ConversionResult:
 
 
 @dataclass
+class GeminiRoleObservation:
+    name: str
+    team: str | None
+    ability: str | None
+    bbox: tuple[int, int, int, int] | None
+    icon_bbox: tuple[int, int, int, int] | None
+
+
+@dataclass
 class GeminiObservation:
     script_name: str | None
     author: str | None
+    roles: list[GeminiRoleObservation]
     lines: list[OCRLine]
 
 
@@ -144,36 +155,59 @@ def _parse_gemini_observations(payload: object) -> GeminiObservation:
     if not isinstance(payload, dict):
         raise ValueError("Model output must be a JSON object")
 
-    raw_lines = payload.get("lines")
-    if not isinstance(raw_lines, list):
-        raise ValueError("Model output must include a lines array")
+    roles: list[GeminiRoleObservation] = []
+    raw_roles = payload.get("roles")
+    if isinstance(raw_roles, list):
+        for raw_role in raw_roles:
+            if not isinstance(raw_role, dict):
+                continue
+            name = str(raw_role.get("name", "")).strip()
+            if not name:
+                continue
+            bbox = _extract_bbox(raw_role)
+            icon_bbox = _extract_bbox(raw_role, prefix="icon_")
+            roles.append(
+                GeminiRoleObservation(
+                    name=name,
+                    team=str(raw_role.get("team")).strip() if raw_role.get("team") else None,
+                    ability=str(raw_role.get("ability")).strip() if raw_role.get("ability") else None,
+                    bbox=bbox,
+                    icon_bbox=icon_bbox,
+                )
+            )
 
     lines: list[OCRLine] = []
-    for raw_line in raw_lines:
-        if not isinstance(raw_line, dict):
-            continue
-        text = str(raw_line.get("text", "")).strip()
-        if not text:
-            continue
-        bbox = _extract_bbox(raw_line)
-        if bbox is None:
-            continue
-        icon_bbox = _extract_bbox(raw_line, prefix="icon_")
-        lines.append(
-            OCRLine(
-                text=text,
-                x0=bbox[0],
-                y0=bbox[1],
-                x1=bbox[2],
-                y1=bbox[3],
-                icon_bbox=icon_bbox,
+    raw_lines = payload.get("lines")
+    if isinstance(raw_lines, list):
+        for raw_line in raw_lines:
+            if not isinstance(raw_line, dict):
+                continue
+            text = str(raw_line.get("text", "")).strip()
+            if not text:
+                continue
+            bbox = _extract_bbox(raw_line)
+            if bbox is None:
+                continue
+            icon_bbox = _extract_bbox(raw_line, prefix="icon_")
+            lines.append(
+                OCRLine(
+                    text=text,
+                    x0=bbox[0],
+                    y0=bbox[1],
+                    x1=bbox[2],
+                    y1=bbox[3],
+                    icon_bbox=icon_bbox,
+                )
             )
-        )
+
+    if not roles and not lines:
+        raise ValueError("Model output must include a roles array or lines array")
 
     lines.sort(key=lambda line: (line.y0, line.x0))
     return GeminiObservation(
         script_name=str(payload.get("script_name")).strip() if payload.get("script_name") else None,
         author=str(payload.get("author")).strip() if payload.get("author") else None,
+        roles=roles,
         lines=lines,
     )
 
@@ -325,6 +359,66 @@ def _extract_script_gemini(image_bytes: bytes, embedded_hint: list | None = None
     return _extract_gemini_observations(image_bytes, embedded_hint=embedded_hint)
 
 
+_TEAM_ALIASES = {
+    "townsfolk": "townsfolk",
+    "outsider": "outsider",
+    "outsiders": "outsider",
+    "minion": "minion",
+    "minions": "minion",
+    "demon": "demon",
+    "demons": "demon",
+    "traveller": "traveller",
+    "travellers": "traveller",
+}
+
+
+def _normalize_team_label(value: str | None) -> str | None:
+    if not value:
+        return None
+    return _TEAM_ALIASES.get(normalize_name(value))
+
+
+def _build_roles_from_gemini_observations(
+    observation: GeminiObservation,
+    official_by_name: dict,
+) -> tuple[str | None, str | None, list[ParsedRole], str]:
+    if observation.roles:
+        deduped: list[ParsedRole] = []
+        seen: set[str] = set()
+        for role in observation.roles:
+            key = normalize_name(role.name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            official = official_by_name.get(key)
+            deduped.append(
+                ParsedRole(
+                    name=role.name,
+                    team=official.team if official else _normalize_team_label(role.team),
+                    ability=(role.ability or "").strip(),
+                    bbox=role.bbox,
+                    icon_bbox=role.icon_bbox,
+                    official=official,
+                )
+            )
+        return observation.script_name, observation.author, deduped, "roles"
+
+    script_name, author, roles = parse_script_lines(observation.lines, official_by_name)
+    if observation.script_name:
+        script_name = observation.script_name
+    if observation.author:
+        author = observation.author
+    return script_name, author, roles, "lines"
+
+
+def _role_names_preview(roles: list[ParsedRole], limit: int = 8) -> str:
+    if not roles:
+        return "none"
+    names = [role.name for role in roles[:limit]]
+    suffix = ", ..." if len(roles) > limit else ""
+    return ", ".join(names) + suffix
+
+
 def _apply_meta_overrides(script: list, name_override: str | None, author_override: str | None) -> None:
     """Apply script name / author overrides to the _meta entry, inserting one if absent."""
     if not (name_override or author_override):
@@ -451,13 +545,22 @@ def convert_image_bytes_to_script(
 
     # --- 2. Try Google AI Studio Gemini with the normalized image bytes ---
     gemini_observations = _extract_gemini_observations(normalized_image_bytes, embedded_hint=embedded_json)
-    if gemini_observations is not None and gemini_observations.lines:
-        logger.info("Gemini extracted %d observed lines from script image", len(gemini_observations.lines))
-        script_name, author, roles = parse_script_lines(gemini_observations.lines, by_name)
-        if gemini_observations.script_name:
-            script_name = gemini_observations.script_name
-        if gemini_observations.author:
-            author = gemini_observations.author
+    if gemini_observations is not None and (gemini_observations.roles or gemini_observations.lines):
+        logger.info(
+            "Gemini extracted %d role observations and %d line observations",
+            len(gemini_observations.roles),
+            len(gemini_observations.lines),
+        )
+        script_name, author, roles, gemini_source = _build_roles_from_gemini_observations(
+            gemini_observations,
+            by_name,
+        )
+        logger.info(
+            "Gemini heuristic role build (%s) produced %d roles: %s",
+            gemini_source,
+            len(roles),
+            _role_names_preview(roles),
+        )
         if script_name_override:
             script_name = script_name_override
         if author_override:
@@ -479,9 +582,11 @@ def convert_image_bytes_to_script(
                 embedded_role_count = _script_role_count(validated_embedded_json)
                 if embedded_role_count >= 4 and gemini_role_count < max(3, embedded_role_count // 2):
                     logger.warning(
-                        "Gemini script looked sparse (%d roles vs %d embedded); using embedded JSON fallback.",
+                        "Gemini script looked sparse (%d roles vs %d embedded; source=%s; roles=%s); using embedded JSON fallback.",
                         gemini_role_count,
                         embedded_role_count,
+                        gemini_source,
+                        _role_names_preview(roles),
                     )
                 else:
                     script_path = output_dir / "script.json"
@@ -507,7 +612,10 @@ def convert_image_bytes_to_script(
                 )
         except jsonschema.ValidationError as exc:
             logger.warning(
-                "Gemini-built script failed schema validation; falling back to embedded/local OCR: %s",
+                "Gemini-built script failed schema validation (%d roles from %s: %s); falling back to embedded/local OCR: %s",
+                len(roles),
+                gemini_source,
+                _role_names_preview(roles),
                 exc.message,
             )
 

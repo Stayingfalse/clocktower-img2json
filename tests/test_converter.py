@@ -86,8 +86,8 @@ def test_extract_script_gemini_returns_script_list():
                     "parts": [
                         {
                             "text": (
-                                '{"script_name":"Test Script","author":null,"lines":['
-                                '{"text":"Washerwoman","x":10,"y":20,"width":120,"height":18,'
+                                '{"script_name":"Test Script","author":null,"roles":['
+                                '{"name":"Washerwoman","team":"townsfolk","ability":"Ability text","x":10,"y":20,"width":120,"height":18,'
                                 '"icon_x":0,"icon_y":10,"icon_width":40,"icon_height":40}'
                                 ']}'
                             )
@@ -108,8 +108,9 @@ def test_extract_script_gemini_returns_script_list():
 
     assert result is not None
     assert result.script_name == "Test Script"
-    assert result.lines[0].text == "Washerwoman"
-    assert result.lines[0].icon_bbox == (0, 10, 40, 50)
+    assert result.roles[0].name == "Washerwoman"
+    assert result.roles[0].team == "townsfolk"
+    assert result.roles[0].icon_bbox == (0, 10, 40, 50)
 
 
 def test_extract_script_gemini_uses_configured_model():
@@ -239,6 +240,70 @@ def test_convert_image_bytes_to_script_uses_gemini_icon_bounds_for_homebrew(tmp_
     assert role["id"] == "my-homebrew"
     saved_icon = Image.open(tmp_path / "abc12345" / "images" / "my-homebrew.png")
     assert saved_icon.size == (52, 52)
+
+
+def test_convert_image_bytes_to_script_builds_from_gemini_roles_payload(tmp_path):
+    image = Image.new("RGB", (220, 220), color="white")
+    for x in range(20, 60):
+        for y in range(40, 80):
+            image.putpixel((x, y), (255, 0, 0))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+
+    gemini_body = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": json.dumps(
+                                {
+                                    "script_name": "Gemini Roles Script",
+                                    "author": "Tester",
+                                    "roles": [
+                                        {
+                                            "name": "My Homebrew",
+                                            "team": "townsfolk",
+                                            "ability": "Does a thing.",
+                                            "x": 90,
+                                            "y": 50,
+                                            "width": 100,
+                                            "height": 20,
+                                            "icon_x": 20,
+                                            "icon_y": 40,
+                                            "icon_width": 40,
+                                            "icon_height": 40,
+                                        }
+                                    ],
+                                }
+                            )
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    mock_response = Mock()
+    mock_response.json.return_value = gemini_body
+    mock_response.raise_for_status.return_value = None
+
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True), patch(
+        "clocktower_img2json.converter.requests.post", return_value=mock_response
+    ), patch("clocktower_img2json.converter.get_script_schema", return_value={"type": "array"}), patch(
+        "clocktower_img2json.converter.get_official_role_maps", return_value=({}, {})
+    ):
+        result = convert_image_bytes_to_script(
+            image_bytes=buffer.getvalue(),
+            storage_dir=tmp_path,
+            public_base_url="http://example.test",
+            request_id="abc12345",
+        )
+
+    assert result.script[0]["name"] == "Gemini Roles Script"
+    role = result.script[1]
+    assert role["id"] == "my-homebrew"
+    assert role["team"] == "townsfolk"
+    assert role["ability"] == "Does a thing."
 
 
 def test_extract_script_gemini_logs_redacted_request_body_on_400(caplog):
