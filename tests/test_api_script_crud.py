@@ -15,6 +15,17 @@ from clocktower_img2json.api import create_app
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 SAMPLE_SCRIPT = [{"id": "_meta", "name": "Test Script"}, {"id": "washerwoman"}]
 UPDATED_SCRIPT = [{"id": "_meta", "name": "Updated Script"}, {"id": "imp"}]
+UPDATED_SCRIPT_WITH_NIGHT_ORDER = [
+    {"id": "_meta", "name": "Updated Script"},
+    {
+        "id": "nightwatch",
+        "name": "Nightwatch",
+        "team": "townsfolk",
+        "ability": "Each night, choose a player.",
+        "firstNight": 12,
+        "otherNight": 45,
+    },
+]
 
 
 @pytest.fixture()
@@ -136,3 +147,15 @@ def test_update_script_bad_identifier_returns_400(client):
     tc, _, _ = client
     response = tc.post("/api/script/../../etc/update", json=UPDATED_SCRIPT)
     assert response.status_code in (400, 404, 422)
+
+
+def test_update_script_preserves_night_order_fields(client):
+    tc, tmp_path, db_path = client
+    uid = "ff88aa99"
+    _seed_script(tmp_path, db_path, uid, SAMPLE_SCRIPT)
+
+    response = tc.post(f"/api/script/{uid}/update?edited_by=Builder", json=UPDATED_SCRIPT_WITH_NIGHT_ORDER)
+
+    assert response.status_code == 200
+    saved = json.loads((tmp_path / uid / "script.json").read_text())
+    assert saved == UPDATED_SCRIPT_WITH_NIGHT_ORDER
