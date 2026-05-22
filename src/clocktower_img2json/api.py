@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from .converter import convert_image_bytes_to_script
 from .data import get_official_roles
 from .database import DB_PATH, create_script_record, init_db, log_script_edit, script_record_exists
+from .parser import save_icon
 from .startup import refresh_official_roles
 
 _SAFE_UUID_RE = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
@@ -132,7 +133,12 @@ def _ensure_script_logo(script_name: str, output_dir: Path) -> None:
     img.save(logo_path)
 
 
-def _rewrite_dashboard_script_assets(script: list[object], script_dir: Path, uid: str) -> list[object]:
+def _rewrite_dashboard_script_assets(
+    script: list[object],
+    script_dir: Path,
+    uid: str,
+    base_url: str,
+) -> list[object]:
     rewritten: list[object] = []
     images_dir = script_dir / "images"
 
@@ -156,7 +162,7 @@ def _rewrite_dashboard_script_assets(script: list[object], script_dir: Path, uid
             generated_icon.replace(icon_path)
 
         new_entry = dict(entry)
-        new_entry["image"] = f"/script/{uid}/{icon_filename}"
+        new_entry["image"] = f"{base_url.rstrip('/')}/script/{uid}/{icon_filename}"
         rewritten.append(new_entry)
 
     return rewritten
@@ -295,7 +301,12 @@ def create_app(
             ) from exc
         except (UnidentifiedImageError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="Uploaded file is not a valid image") from exc
-        script = _rewrite_dashboard_script_assets(result.script, upload_dir, uid)
+        script = _rewrite_dashboard_script_assets(
+            result.script,
+            upload_dir,
+            uid,
+            str(request.base_url).rstrip("/"),
+        )
         if not script or not (isinstance(script[0], dict) and script[0].get("id") == "_meta"):
             script.insert(0, {"id": "_meta", "name": "Custom Script"})
         script_name = str(script[0].get("name", "Custom Script")) if isinstance(script[0], dict) else "Custom Script"
@@ -354,6 +365,7 @@ def create_app(
     async def update_script_icon(
         uuid_str: str,
         role_id: str,
+        request: Request,
         image: UploadFile = File(...),
         edited_by: str | None = None,
     ):
@@ -374,7 +386,8 @@ def create_app(
 
         icon_filename = f"script.{role_id}.png"
         icon_path = script_dir / icon_filename
-        icon.save(icon_path, format="PNG")
+        save_icon(icon, icon_path)
+        base_url = str(request.base_url).rstrip("/")
 
         log_script_edit(
             safe_uid,
@@ -387,7 +400,7 @@ def create_app(
             "message": "Icon updated successfully",
             "uuid": safe_uid,
             "role_id": role_id,
-            "asset_url": f"/script/{safe_uid}/{icon_filename}",
+            "asset_url": f"{base_url}/script/{safe_uid}/{icon_filename}",
         }
 
     @app.get("/script/{uuid_str}/script.json")

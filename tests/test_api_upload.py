@@ -197,7 +197,7 @@ def test_upload_homebrew_role_uses_script_asset_route(client):
         )
 
     role = response.json()["script"][1]
-    assert role["image"].startswith("/script/")
+    assert role["image"].startswith("http://testserver/script/")
     assert role["image"].endswith("script.my-homebrew.png")
 
 

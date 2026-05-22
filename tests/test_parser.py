@@ -1,5 +1,7 @@
 from clocktower_img2json.data import OfficialRole
-from clocktower_img2json.parser import OCRLine, parse_script_lines
+from PIL import Image
+
+from clocktower_img2json.parser import OCRLine, parse_script_lines, remove_background
 
 
 def test_parse_script_lines_official_roles():
@@ -44,3 +46,14 @@ def test_parse_script_lines_homebrew_role_with_team_and_ability():
     assert roles[0].official is None
     assert roles[0].team == "minion"
     assert roles[0].ability == "Each night, choose a player: they are mad tomorrow."
+
+
+def test_remove_background_makes_corner_transparent_but_keeps_foreground():
+    icon = Image.new("RGB", (40, 40), color=(245, 245, 245))
+    for x in range(12, 28):
+        for y in range(12, 28):
+            icon.putpixel((x, y), (30, 70, 180))
+
+    cleaned = remove_background(icon)
+    assert cleaned.getpixel((0, 0))[3] == 0
+    assert cleaned.getpixel((20, 20))[3] == 255

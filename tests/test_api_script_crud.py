@@ -181,6 +181,7 @@ def test_update_script_icon_overwrites_png_and_logs_edit(client):
     )
 
     assert response.status_code == 200
+    assert response.json()["asset_url"] == f"http://testserver/script/{uid}/script.nightwatch.png"
     assert (tmp_path / uid / "script.nightwatch.png").exists()
 
     with sqlite3.connect(db_path) as conn:
@@ -189,6 +190,30 @@ def test_update_script_icon_overwrites_png_and_logs_edit(client):
             (uid,),
         ).fetchone()
     assert row == ("IconArtist", "Updated icon for role nightwatch")
+
+
+def test_update_script_icon_transparents_background_edges(client):
+    tc, tmp_path, db_path = client
+    uid = "iconbg11"
+    _seed_script(tmp_path, db_path, uid, SAMPLE_SCRIPT)
+
+    image = Image.new("RGB", (64, 64), color=(250, 250, 250))
+    for x in range(18, 46):
+        for y in range(18, 46):
+            image.putpixel((x, y), (20, 80, 200))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    response = tc.post(
+        f"/api/script/{uid}/icon/nightwatch",
+        files={"image": ("icon.png", buffer, "image/png")},
+    )
+    assert response.status_code == 200
+
+    saved = Image.open(tmp_path / uid / "script.nightwatch.png").convert("RGBA")
+    assert saved.getpixel((0, 0))[3] == 0
+    assert saved.getpixel((32, 32))[3] == 255
 
 
 def test_update_script_icon_rejects_bad_role_identifier(client):
